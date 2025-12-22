@@ -16,11 +16,13 @@ if [[ -z "$TMC_ENDPOINT" && -z "$ORG_NAME" ]]; then
   exit 1
 fi
 
-
+if [ -z "$TMC_ENV" ]; then
+  TMC_ENV="tmc" # "tmc-dev" for dev stack
+fi
 # The URL can be overridden by environment variable, e.g for dev stack
 # export TMC_ENDPOINT={{ORG_NAME}}.tmc-dev.tanzu.broadcom.com
 if [ -z "$TMC_ENDPOINT" ]; then
-  TMC_ENDPOINT="${ORG_NAME}.tanzu.broadcom.com"
+  TMC_ENDPOINT="${ORG_NAME}.${TMC_ENV}.tanzu.broadcom.com"
 fi
 
 # The CSP_URL can be overridden by environment variable, e.g for stg CSP
