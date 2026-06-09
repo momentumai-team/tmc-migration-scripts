@@ -1,0 +1,149 @@
+# TMC-SM migration
+
+## What this is
+
+A fork of [vmware-samples/tmc-migration-scripts](https://github.com/vmware-samples/tmc-migration-scripts), originally a POC for migrating an entire TMC SaaS organization to a TMC Self-Managed (SM) instance via numbered bash scripts.
+
+**Fork goal:** repurpose the same pipeline to migrate a **subset** of clusters — specifically, **non-prod** workload clusters, their cluster groups, and their management server (a VKS supervisor) — out of a TMC instance that hosts both prod and non-prod. Prod must not be touched.
+
+**Source/destination pair for this fork:** both sides are TMC Self-Managed. The source is an existing **TMC SM 1.4.2** instance hosting prod and non-prod; the destination is a separate TMC SM instance that will own non-prod only. **Both sides start on 1.4.2.** The destination will be upgraded in place to **1.4.4** partway through the migration window, after a small version-matched soak — see [Sequencing the destination 1.4.4 upgrade](#sequencing-the-destination-144-upgrade) below. The source stays on 1.4.2 throughout (prod still lives on it).
+
+This differs from the upstream POC, which assumed a SaaS source → SM destination. The auth flow, context names, and several script names in the upstream still encode the "SaaS source" assumption and must be reworked or parameterized.
+
+The original POC assumes "migrate everything." This fork must introduce filtering so that only non-prod resources are exported, offboarded from the source, and onboarded into the destination.
+
+## Pipeline shape
+
+Scripts are numbered `<NNN>-<scope>-<resource>-<operation>.sh` and meant to run in order. Phases:
+
+| Range | Phase | Notes |
+| --- | --- | --- |
+| `001` | Connect to source | Upstream: SaaS auth. For this fork: SM auth (source is SM 1.4.2). Creates tanzu CLI context named `migration`. |
+| `002`–`030` | Export resources from source | Cluster groups, workspaces, admin (roles/creds/proxy/registry/settings), per-cluster-group resources (secrets, FluxCD, git, helm), per-cluster resources, data protection, access policies, policy templates, policy assignments. Driven by `export-all-from-saas.sh` (name is now a misnomer — source is SM in this fork). |
+| `031` | Managed cluster export + offboard | `TMC_MC_FILTER` env var selects management clusters by name. Excludes the synthetic `attached`/`eks`/`aks` MC names. |
+| `032` | Attached cluster export + offboard | `CLUSTER_NAME_FILTER` env var selects by name. |
+| `033` | Connect to destination (SM) | Creates tanzu CLI context named `tmc-sm` |
+| `034`–`047` | Import cluster groups, workspaces, admin, per-cluster-group resources | |
+| `048` | Onboard managed clusters to SM | Has companion `-input_from_user.sh` (build kubeconfig index) and `-ensure-cleanup.sh` (strip stale TMC annotations / agents from source-side clusters) |
+| `049` | Onboard attached clusters to SM | Plus `-whole_clusters-check_readiness.sh` |
+| `050`–`064` | Import per-cluster resources, admin settings/access, policies, data protection | |
+
+Re-run scripts after fixing inputs — most are idempotent on the SM side (skip-if-exists patterns) but **destructive on the source side** (offboard = unmanage + deregister).
+
+## Conventions
+
+- **Shell:** bash. Scripts source helpers from `utils/`; not all scripts use `set -e` consistently — some use `set -eE -o pipefail`, others rely on manual exit codes. Don't tighten this without checking downstream.
+- **Data layout:** every script writes under `./data/<resource>/...` relative to the script. `utils/common.sh::data_dir` derives the subdirectory from the script filename (drops trailing token like `-export`).
+- **CLI tools required:** `tanzu` CLI (with `tmc` plugin), `yq`, `jq`, `kubectl`, `openssl`, `curl`, `base64`.
+- **Two tanzu contexts:** `migration` (source) and `tmc-sm` (destination). `utils/context.sh` provides `use_tmc_saas_context` / `use_tmc_sm_context` — these switch the CLI's active context, so don't run source and destination scripts interleaved without checking. **Note:** `use_tmc_saas_context` is misnamed in this fork — the source is SM, not SaaS. The function still works (it just activates the `migration` context), but the name and any SaaS-specific auth assumptions inside it need attention.
+- **Logging:** `utils/log.sh` exposes `log info|warn|error|debug`. Set `DEBUG=on` for verbose. Don't replace with `echo` in new scripts.
+- **Existing filters (env vars):**
+
+  - `TMC_MC_FILTER` — comma-separated management cluster names (`031`, `019`, `020`, `022`, `utils/offboard-clusters.sh`).
+  - `CLUSTER_NAME_FILTER` — comma-separated attached cluster names (`032`, `019`, `020`, `022`, `utils/offboard-clusters.sh`).
+  - **No cluster-group filter exists today** — this is the main gap for the fork.
+
+- **Hardcoded skip list:** `031` and `048` skip MC names equal to `attached`, `eks`, `aks` (synthetic MCs in TMC for non-MC-managed clusters). Preserve this behavior when filtering.
+- **Connection env vars:**
+
+  - Source (upstream, SaaS): `TANZU_API_TOKEN`, `ORG_NAME` (or `TMC_ENDPOINT`), optional `TMC_ENV`, `CSP_URL`.
+  - Destination: `TMC_SELF_MANAGED_USERNAME`, `TMC_SELF_MANAGED_PASSWORD`, `TMC_SELF_MANAGED_DNS`, optional `TMC_SM_IDP_MFA_ENABLED`.
+  - **For this fork (SM source on 1.4.2):** `001` needs to authenticate the `migration` context with SM-style credentials, not SaaS. The pattern in `033` (SM destination connect) is the closest reference — separate env vars for source vs. destination (e.g. `TMC_SOURCE_USERNAME`, `TMC_SOURCE_PASSWORD`, `TMC_SOURCE_DNS`, `TMC_SOURCE_IDP_MFA_ENABLED`) keep the two contexts independently configurable without colliding with the existing destination vars.
+
+## Fork-specific goal: non-prod only, one cluster at a time
+
+The user's environment has one TMC instance covering both prod and non-prod. Non-prod has its own management cluster (VKS supervisor) and its own cluster group(s). Prod has separate ones. Goal: lift just the non-prod side over and leave prod alone.
+
+**Hard constraint: migrate one workload cluster per run.** Blast radius must stay small — if a single cluster move fails, the rest of non-prod (and all of prod) must be unaffected and the operator must be able to roll forward to the next cluster on their own schedule. The original POC was designed for one big "do all of non-prod" sweep; this fork must support repeated single-cluster runs against a stable, already-prepared destination.
+
+This reshapes the pipeline into two distinct kinds of runs:
+
+1. **One-time preparation (per non-prod environment).** Connect to source and destination; export and import the cluster-group, workspace, admin, and policy metadata that any non-prod cluster could reference. Register the non-prod management cluster in the destination. Done once.
+2. **Per-cluster run (repeatable).** For a single target workload cluster: export its per-cluster resources, offboard *only that workload cluster* from the source MC (do **not** deregister the MC), then manage that workload cluster in the destination MC and import its per-cluster resources. Verify. Stop. Operator decides when to do the next one.
+
+**What's already adequate for the MC dimension:**
+
+- `031` and the per-cluster export scripts (`019`, `020`, `022`) already filter by `TMC_MC_FILTER`. Setting this to the non-prod management cluster name gets you the right managed/workload clusters and their per-cluster resources.
+
+**What's missing (the meaningful gaps):**
+
+1. **No cluster-group filter.** `002-base-clustergroups-export.sh` does `tanzu tmc clustergroup list -o yaml > ...` — it exports prod and non-prod groups together. Then every `010`–`017` script iterates the whole exported list. Then `034` and `040`–`047` import all of them into the destination. Need a `TMC_CG_FILTER` (or similar) env var honored end-to-end.
+2. **No single-cluster filter.** `TMC_MC_FILTER` narrows to a management cluster, but within an MC there is no way to say "just this one workload cluster." `031-base-managed_clusters-offboard.sh:50` iterates *every* WC under the matched MC and unmanages it, then `:68` deregisters the MC entirely. `048-base-managed_clusters-onboard.sh:198` does the symmetric thing on the destination. Per-cluster mode needs a `TMC_WC_FILTER` (single name, or `mgmt/provisioner/name` triple) that both offboard and onboard honor, and the offboard script must **not** deregister the MC when only a subset of its WCs are being moved.
+3. **Workspaces (`003`, `035`, `040`-namespace etc.).** Workspaces are an org-wide concept in TMC, not bound to a cluster group. For per-cluster runs, the workspace(s) referenced by the target cluster's namespaces must already exist in the destination. Simplest: import all non-prod-referenced workspaces during the one-time preparation, derived from `data/cluster-namespaces/`.
+4. **Access policies (`028`, `061`)** and **policy assignments (`030`, `063`)** iterate all cluster groups and all clusters from their exported lists. Once `002`/`031` are filtered, these scripts inherit the filter via their input files — *if* they read the already-filtered lists. Verify they do; the policy scripts currently re-list (`tanzu tmc cluster list -oyaml` in `028` and `030`), which would re-include prod.
+5. **Admin resources (`004`–`009`, `036`–`039`, `059`–`060`).** Roles, credentials, proxy, image registry, settings, access — all org-wide. Most likely want to copy verbatim during preparation, but credentials/proxy/registry referenced only by prod could be skipped. Lowest priority.
+6. **Hardcoded `attached`/`eks`/`aks` exclusion stays correct,** but the per-MC iteration in `031` line 41 and `048` will need to additionally filter cluster-group and single-cluster membership when narrowing.
+7. **`048-base-managed_clusters-onboard.sh` re-registers the MC every run.** In per-cluster mode, the MC should be registered exactly once (during preparation) and skipped on subsequent per-cluster runs. The script already checks MC health and skips re-registration when `HEALTHY` (`:240`), which mostly handles this — verify it stays a no-op once the MC is established.
+8. **`utils/common.sh::ONBOARDED_CLUSTER_INDEX_FILE`** is append-only, which is friendly to repeated per-cluster runs, but the per-cluster export scripts (`019`, `020`, `022`) iterate everything in `offboard-clusters.sh` output rather than a single cluster — they will need to honor the same `TMC_WC_FILTER`.
+
+**Recommendations to consider before coding:**
+
+- Add `TMC_CG_FILTER` (comma-separated CG names) and `TMC_WC_FILTER` (single `name` or `mgmt/provisioner/name` triple) env vars. Thread `TMC_CG_FILTER` through `002`, `010`–`017`, `028`/`030`, and `034`/`040`–`047`. Thread `TMC_WC_FILTER` through `019`–`027`, `031` (offboard), `048` (onboard workload-cluster loop), and `050`–`058`, `063`-cluster, `064`.
+- Treat filters as independent axes — `TMC_MC_FILTER` for MC-scoped, `TMC_CG_FILTER` for CG-scoped, `TMC_WC_FILTER` for single-cluster scope. AND-combined semantics get confusing fast and don't match the existing axis-per-env-var pattern.
+- For per-cluster scripts that already read the filtered `mc_list.yaml` / `wc_of_<mc>.yaml`, the existing inheritance is fine — only add `TMC_WC_FILTER` enforcement at the iteration loops.
+- Re-check `028-base-access-policies-export.sh` and `030-base-policy-assignments-export.sh` — they call `tanzu tmc cluster list -oyaml` directly instead of reusing the filtered list from `031`. This is a latent bug for the non-prod use case.
+- Split `031-base-managed_clusters-offboard.sh` into two behaviors: (a) WC unmanage (the inner `while read` block at `:52`-`:55`), which runs per-cluster; (b) MC deregister (`:67`-`:68`), which runs once at the very end of the non-prod migration, gated by an explicit `TMC_DEREGISTER_MC=true` env var. Default to (a) only.
+- **Offboarding is destructive.** Add a dry-run / confirm step that prints exactly which workload cluster(s) are about to be unmanaged from which MC before `tanzu tmc mc wc unmanage` runs. In per-cluster mode, this should print exactly one line.
+- Add an orchestrator script (companion to `export-all-from-saas.sh`) that runs only the preparation phase, and a second one that runs a single per-cluster cycle given `TMC_WC_FILTER`. Keep them thin — just sequenced calls to the existing numbered scripts.
+- The README still describes a SaaS→SM migration. For this fork, the source is **TMC SM 1.4.2** and the destination is TMC SM — both sides are SM. The upstream connect scripts (`001`, `033`) are written for SaaS-source / SM-destination; `001` needs to be rewritten (or `033`'s SM auth flow parameterized for source vs. destination) before any export script will work. This is a prerequisite to all other fork work, since nothing runs until `001` can establish the `migration` context against the SM source.
+
+## Suggested per-cluster runbook (target shape)
+
+This is the end-state the fork should support, not what works today:
+
+**Once per non-prod environment (preparation):**
+
+1. `001` — connect to source TMC.
+2. `033` — connect to destination TMC.
+3. With `TMC_CG_FILTER` set to the non-prod cluster group(s): run `002` (CG export), `003` (workspaces export — full or derived), `004`–`009` (admin export), `028`/`030` (policy/IAM export, CG-filtered).
+4. `034`–`047` — import CGs, workspaces, admin, per-CG resources into destination.
+5. `031` (export half only) with `TMC_MC_FILTER` set to the non-prod MC — produces `mc_list.yaml` and `wc_of_<mc>.yaml` so per-cluster runs have a stable input.
+6. `048` — register the non-prod MC in the destination (workload-cluster loop skipped via `TMC_WC_FILTER=__none__` or a "register MC only" flag). MC must reach `HEALTHY` before any per-cluster run.
+
+**Per cluster (repeat for each non-prod WC, one at a time):**
+
+1. Set `TMC_WC_FILTER=<wc_name>` (and `TMC_MC_FILTER`, `TMC_CG_FILTER` as before).
+2. Run `019`–`027` — export that cluster's resources only.
+3. Run `031` (offboard half) — unmanage that single WC from the source MC. **Do not deregister the MC.**
+4. Run `048-base-managed_clusters-ensure-cleanup.sh` for that single WC — strip TMC annotations/agents.
+5. Run `048` (workload-cluster loop only) — manage that single WC under the already-registered destination MC.
+6. Run `049-base-whole_clusters-check_readiness.sh` — confirm the WC is healthy in the destination.
+7. Run `050`–`058`, `061`-cluster, `063`-cluster, `064` — import per-cluster resources for that WC only.
+8. Verify the workload on the cluster. Stop. Operator chooses when to start the next cluster.
+
+**Final cleanup (once all non-prod WCs are migrated):**
+
+1. Run `031` with `TMC_DEREGISTER_MC=true` — deregister the empty non-prod MC from the source.
+2. Optionally delete the non-prod cluster groups from the source.
+
+## Sequencing the destination 1.4.4 upgrade
+
+The destination TMC SM is provisioned at **1.4.2** to match the source, and is upgraded to **1.4.4** during the migration window — not before it starts, and not after it finishes. The early non-prod clusters act as a real-traffic shakedown of the destination at the matched version, then the upgrade happens, then the rest of the clusters migrate cross-version.
+
+**Phasing:**
+
+1. **Phase A — version-matched soak (source 1.4.2 → dest 1.4.2).** Migrate a small batch of low-impact non-prod workload clusters first (e.g. 2–3). These exercise the migration scripts against a same-version pair, where resource schema compatibility is the simplest case. Confirm the clusters are healthy under the destination, workloads keep running, and basic TMC operations (policy push, agent reporting) work.
+2. **Phase B — destination upgrade (dest 1.4.2 → 1.4.4).** Upgrade the destination TMC SM in place. After upgrade, verify:
+   - Phase A workload clusters are still `HEALTHY` in the destination (their TMC agents are bumped by the platform as part of the upgrade — confirm before continuing).
+   - The non-prod MC registration in the destination is still healthy.
+   - The cluster-group / workspace / admin / policy state imported during preparation is intact.
+   - The `tanzu` CLI and `tmc` plugin used by the migration scripts are still compatible — may require bumping to match 1.4.4.
+3. **Phase C — cross-version migration (source 1.4.2 → dest 1.4.4).** Resume the per-cluster runbook for the remaining non-prod WCs. The source still emits 1.4.2 YAML; the destination accepts it at 1.4.4. Schema changes between 1.4.2 and 1.4.4 are expected to be additive, but validate end-to-end with the first post-upgrade cluster before continuing the batch.
+
+**Risks specific to the mid-migration upgrade:**
+
+- **CLI/plugin drift.** The `tanzu` and `tmc` plugin versions used by the migration scripts may need to be bumped after Phase B. Record the exact CLI/plugin versions used in Phase A so a Phase A re-run (if needed) stays reproducible.
+- **Resource schema additions in 1.4.4.** If 1.4.4 introduces new required fields on a resource the source (1.4.2) doesn't emit, Phase C imports will fail. The first post-upgrade cluster catches this — don't batch through Phase C blind.
+- **In-place agent upgrades on already-managed clusters.** The destination platform upgrade bumps cluster agents on every already-onboarded WC, including the Phase A clusters. Treat this as a real change to those clusters — verify health before starting Phase C, not just after Phase B finishes.
+- **Source stays on 1.4.2.** Don't upgrade the source during the migration window. Source-side schema drift mid-pipeline isn't something the export scripts handle, and prod still depends on it.
+
+**Why not just upgrade first.** Upgrading the destination to 1.4.4 before migrating anything makes the very first migration also a version-skew test. Doing a version-matched soak first separates "are the migration scripts correct" from "does cross-version schema work" — two failure modes that are much easier to debug independently.
+
+## What not to do
+
+- Don't refactor the numbered-scripts structure; keep new behavior behind env vars and minor edits to the existing scripts.
+- Don't add filtering inside `utils/` helpers in a way that silently changes behavior of scripts that don't opt in — start by passing the new filter explicitly per script.
+- Don't reorder phases. Cluster-group and workspace import must precede cluster onboarding (cluster spec references `clusterGroupName`; namespace imports reference workspaces).
+- Don't deregister the source MC as part of a per-cluster run — that is the "all non-prod WCs done" final step, not part of the inner loop.
+- Don't run any `*-offboard.sh` against the real source without first dry-running the corresponding `*-export.sh` and visually confirming `data/clusters/mc_list.yaml` (and the per-cluster filter, when set) match *only* the intended target.
+- Don't upgrade the source TMC during the migration window, and don't upgrade the destination to 1.4.4 before the Phase A soak finishes — see [Sequencing the destination 1.4.4 upgrade](#sequencing-the-destination-144-upgrade).
