@@ -123,11 +123,12 @@ The destination TMC SM is provisioned at **1.4.2** to match the source, and is u
 **Phasing:**
 
 1. **Phase A — version-matched soak (source 1.4.2 → dest 1.4.2).** Migrate a small batch of low-impact non-prod workload clusters first (e.g. 2–3). These exercise the migration scripts against a same-version pair, where resource schema compatibility is the simplest case. Confirm the clusters are healthy under the destination, workloads keep running, and basic TMC operations (policy push, agent reporting) work.
-2. **Phase B — destination upgrade (dest 1.4.2 → 1.4.4).** Upgrade the destination TMC SM in place. After upgrade, verify:
+2. **Phase B — destination upgrade (dest 1.4.2 → 1.4.4).** Per the [TMC SM upgrade docs](https://techdocs.broadcom.com/us/en/vmware-tanzu/standalone-components/tanzu-mission-control-self-managed/1-4/tmc-self-managed-documentation/install-and-run-tmc-self-managed/upgrading-tmc-self-managed.html), this is an ordered sequence on the TMC SM target cluster: stage images → `tanzu package repository update tanzu-mission-control-packages --url ...` (bumps the **Tanzu Standard Package Repository** from `v2025.6.18` to `v2026.1.21`) → wait for kapp-controller reconciliation → `tanzu package installed update tanzu-mission-control`. Don't compress the gap between the repo bump and the TMC package update — that gap is the only debug window if a downstream package (FluxCD especially — see [FluxCD and Standard Repository upgrade](#fluxcd-and-standard-repository-upgrade) below) reconciles poorly. After upgrade, verify:
    - Phase A workload clusters are still `HEALTHY` in the destination (their TMC agents are bumped by the platform as part of the upgrade — confirm before continuing).
    - The non-prod MC registration in the destination is still healthy.
    - The cluster-group / workspace / admin / policy state imported during preparation is intact.
    - The `tanzu` CLI and `tmc` plugin used by the migration scripts are still compatible — may require bumping to match 1.4.4.
+   - Flux on every CD-enabled Phase A cluster: source-controller, kustomize-controller, helm-controller pods all running on the post-upgrade image versions; CRD storage versions for `gitrepositories.source.toolkit.fluxcd.io`, `kustomizations.kustomize.toolkit.fluxcd.io`, `helmreleases.helm.toolkit.fluxcd.io` unchanged or cleanly migrated; one real `flux reconcile kustomization ...` succeeds end-to-end. Logs should be free of `failed to get API group resources` errors against any `*.toolkit.fluxcd.io` group.
 3. **Phase C — cross-version migration (source 1.4.2 → dest 1.4.4).** Resume the per-cluster runbook for the remaining non-prod WCs. The source still emits 1.4.2 YAML; the destination accepts it at 1.4.4. Schema changes between 1.4.2 and 1.4.4 are expected to be additive, but validate end-to-end with the first post-upgrade cluster before continuing the batch.
 
 **Risks specific to the mid-migration upgrade:**
@@ -136,8 +137,56 @@ The destination TMC SM is provisioned at **1.4.2** to match the source, and is u
 - **Resource schema additions in 1.4.4.** If 1.4.4 introduces new required fields on a resource the source (1.4.2) doesn't emit, Phase C imports will fail. The first post-upgrade cluster catches this — don't batch through Phase C blind.
 - **In-place agent upgrades on already-managed clusters.** The destination platform upgrade bumps cluster agents on every already-onboarded WC, including the Phase A clusters. Treat this as a real change to those clusters — verify health before starting Phase C, not just after Phase B finishes.
 - **Source stays on 1.4.2.** Don't upgrade the source during the migration window. Source-side schema drift mid-pipeline isn't something the export scripts handle, and prod still depends on it.
+- **Standard Package Repository rebrand.** The TMC SM 1.4.3 release notes already flag a documented known issue — the Available Packages page shows duplicate entries when the Standard Repository contains rebranded packages alongside legacy ones. Between `v2025.6.18` and `v2026.1.21`, expect at least one renamed package; this is cosmetic at the TMC catalog layer but can surface as install collisions if both the old and new package names get installed on the same cluster. Confirm against the v2026.1.21 release notes before Phase B (see below — they were not yet public when this doc was written).
+- **FluxCD dual-ownership.** Covered in detail in [FluxCD and Standard Repository upgrade](#fluxcd-and-standard-repository-upgrade) — TMC's CD extension *defers to existing Flux CRDs* if the Tanzu Standard `fluxcd2` package is already installed on the same cluster. This means a Standard Repo upgrade can mutate Flux CRDs out from under TMC without TMC knowing.
 
 **Why not just upgrade first.** Upgrading the destination to 1.4.4 before migrating anything makes the very first migration also a version-skew test. Doing a version-matched soak first separates "are the migration scripts correct" from "does cross-version schema work" — two failure modes that are much easier to debug independently.
+
+## FluxCD and Standard Repository upgrade
+
+The Phase B upgrade bumps **two** things in close succession on the TMC SM target cluster: the **Tanzu Standard Package Repository** (`v2025.6.18` → `v2026.1.21`) and the **TMC SM package** (`1.4.2` → `1.4.4`). The Standard Repo bump is the one that ships new FluxCD component versions; the TMC SM bump does not appear to change the FluxCD version bundled with the Continuous Delivery extension (TMC SM 1.4.x has shipped Flux v2.1.x throughout 1.4 GA, 1.4.3, and 1.4.4, per the release notes). So the Flux risk lives in the Standard Repo bump, not in the TMC SM bump.
+
+**Documented Flux versions in `v2025.6.18` (your starting point):**
+
+| Component | Version |
+| --- | --- |
+| `fluxcd-source-controller` | `v1.5.0+vmware.1-tkg.1` |
+| `fluxcd-kustomize-controller` | `v1.5.1+vmware.1-tkg.1` |
+| `fluxcd-helm-controller` | `v1.2.0+vmware.1-tkg.1` |
+
+**`v2026.1.21` Flux versions:** not yet public at the time of writing. Upstream Flux policy states "Flux can be upgraded from any v2.x release to any other v2.x release," so a within-`v1.x` bump for the Vmware-repackaged controllers should be safe — but Vmware repackaging adds its own version envelope, and the rebrand flagged in TMC SM 1.4.3 may also apply to `fluxcd2`. **Treat unavailable release notes for v2026.1.21 as a Phase B hold-point**, not a go-ahead with assumptions.
+
+### Dual-Flux ownership: the main break vector
+
+TMC's CD enable behavior, per the [Enable CD docs](https://techdocs.broadcom.com/us/en/vmware-tanzu/standalone-components/tanzu-mission-control-self-managed/1-4/tmc-self-managed-documentation/using-tmc/managing-cluster-resources-with-continuous-delivery/enable-continuous-delivery-for-a-cluster-or-cluster-group.html):
+
+> If Flux CRDs are present, TMC uses the currently installed instance rather than installing a new one. If the CRDs are not present, TMC installs the Flux source controller and Kustomize controller and subsequently manages their lifecycles.
+
+Translation: on any cluster that already has the Tanzu Standard `fluxcd2` package installed, TMC's CD piggybacks on those CRDs and *kapp-controller* — not TMC — owns the Flux lifecycle. When Phase B bumps the Standard Repo, kapp-controller reconciles a new `fluxcd2` package version, which can:
+
+- Change the `helm.toolkit.fluxcd.io` / `source.toolkit.fluxcd.io` / `kustomize.toolkit.fluxcd.io` CRD `storage` version.
+- Trigger the documented [API-group resolution error](https://knowledge.broadcom.com/external/article/369984/enable-continuous-delivery-for-a-tkgs-cl.html) (`failed to get API group resources: unable to retrieve the complete list of server APIs: helm.toolkit.fluxcd.io/v2`) on subsequent CD reconciliations.
+- Leave TMC's CD agents pointing at API versions the controller no longer serves.
+
+This is the most plausible way the Phase B upgrade silently breaks a Phase A cluster's CD without breaking the TMC SM upgrade itself.
+
+### Pre-Phase B inventory
+
+On the TMC SM target cluster and on every CD-enabled Phase A workload cluster, capture:
+
+- Whether `fluxcd2` (or any `fluxcd-*` package) is installed via `tanzu package installed list -A` and which namespace owns it.
+- Image tags currently running for source/kustomize/helm/notification controllers (`kubectl -n <ns> get deploy -o wide`).
+- CRD storage versions: `kubectl get crd helmreleases.helm.toolkit.fluxcd.io -o jsonpath='{.spec.versions[?(@.storage)].name}'` (and equivalents for `gitrepositories`, `kustomizations`, `ocirepositories`, `helmrepositories`, `helmcharts`, `buckets`).
+- Whether CD is TMC-managed on each cluster, and whether any non-TMC Flux `HelmRelease`/`Kustomization` resources exist.
+
+This inventory is what tells you, after Phase B, whether anything actually changed underneath you.
+
+### Mitigation options
+
+- **Get v2026.1.21 release notes before scheduling Phase B.** Confirm component versions, package renames, and CRD storage version changes. If notes aren't published, hold Phase B.
+- **Consider disabling TMC CD on CD-enabled Phase A clusters across the Phase B window**, then re-enabling after. Brief CD outage; in return, TMC owns Flux lifecycle on those clusters again (CRDs reinstalled by TMC after re-enable) and Phase B can't break the CD path. Note that disable does not remove `tanzu-fluxcd-packageinstalls` resources cleanly — per [KB 375864](https://knowledge.broadcom.com/external/article/375864/how-to-remove-the-flux-cd-package-after.html), expect to clean up orphan package installs manually.
+- **If both `fluxcd2` and TMC CD remain co-resident across Phase B**, treat the *first* CD reconciliation after Phase B as the canary — a forced `flux reconcile kustomization ...` against a known-good GitRepository on a Phase A cluster, with controller logs tailed. If it fails with `failed to get API group resources`, halt Phase C and disable/re-enable CD on the affected clusters before continuing.
+- **Update Phase B verification** to include the explicit Flux checks already listed under Phase B above. They aren't optional — they are the only check that distinguishes "TMC SM upgraded cleanly" from "Phase B silently moved Flux out from under CD."
 
 ## What not to do
 
@@ -147,3 +196,4 @@ The destination TMC SM is provisioned at **1.4.2** to match the source, and is u
 - Don't deregister the source MC as part of a per-cluster run — that is the "all non-prod WCs done" final step, not part of the inner loop.
 - Don't run any `*-offboard.sh` against the real source without first dry-running the corresponding `*-export.sh` and visually confirming `data/clusters/mc_list.yaml` (and the per-cluster filter, when set) match *only* the intended target.
 - Don't upgrade the source TMC during the migration window, and don't upgrade the destination to 1.4.4 before the Phase A soak finishes — see [Sequencing the destination 1.4.4 upgrade](#sequencing-the-destination-144-upgrade).
+- Don't run Phase B against an unread set of release notes. v2026.1.21 Standard Repo contents and TMC SM 1.4.4 known-issue list are the inputs that decide whether Phase B's Flux behavior is safe — see [FluxCD and Standard Repository upgrade](#fluxcd-and-standard-repository-upgrade).
