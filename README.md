@@ -1,12 +1,12 @@
-# tmc-saas-migration-scripts
+# tmc-sm-migration-scripts
 
-This is a repo to store the scripts in the [Migrate TMC SaaS to SM](https://docs.google.com/document/d/1js_kX4ogXArU55jZ6pcjra09gE9L-l4TMuxjzLy0HEg/edit?usp=sharing) doc, which guides how to migrate resources from TMC SaaS to  Self-Managed.
+This repo holds bash scripts and a Jupyter notebook for migrating from a **TMC Self-Managed (SM) source** stack to a **TMC SM destination** stack. It is a fork of the [vmware-samples/tmc-migration-scripts](https://github.com/vmware-samples/tmc-migration-scripts) POC (originally TMC SaaS → SM); see [`migration-repurpose.md`](./migration-repurpose.md) for the rationale, fork-specific goals (non-prod-only, one cluster at a time), and the running change log.
 
 ## Script Index
 
 | Script                                                                                                   | Description                                                  | Status | Notes                                                                                                                                                      |
 | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [001-base-saas\_stack-connect.sh](./001-base-saas_stack-connect.sh)                                      | Authenticate and connect to the SaaS platform                | READY  | - Include both CLI and API options  - Once the token or context expired, rerun the script to regenerate one                                                |
+| [001-base-source\_stack-connect.sh](./001-base-source_stack-connect.sh)                                  | Authenticate and connect to the source TMC SM stack          | READY  | Uses `TMC_SOURCE_USERNAME` / `TMC_SOURCE_PASSWORD` / `TMC_SOURCE_DNS` (optional `TMC_SOURCE_IDP_MFA_ENABLED`). Rerun if the `migration` context expires. |
 | [002-base-clustergroups-export.sh](./002-base-clustergroups-export.sh)                                   | Export cluster groups                                        | READY  |                                                                                                                                                            |
 | [003-base-workspaces-export.sh](./003-base-workspaces-export.sh)                                         | Export workspaces                                            | READY  |                                                                                                                                                            |
 | [004-admin-roles-export.sh](./004-admin-roles-export.sh)                                                 | Export roles under Administration                            | READY  |                                                                                                                                                            |
@@ -18,7 +18,7 @@ This is a repo to store the scripts in the [Migrate TMC SaaS to SM](https://docs
 | [010-clustergroup-secrets-export.sh](./010-clustergroup-secrets-export.sh)                               | Export k8s secret resources of cluster groups                | READY  |                                                                                                                                                            |
 | [011-clustergroup-secret-exports-export.sh](./011-clustergroup-secret-exports-export.sh)                 | Export k8s secret export resources of cluster groups         | READY  |                                                                                                                                                            |
 | [012-clustergroup-continuous-deliveries-export.sh](./012-clustergroup-continuous-deliveries-export.sh)   | Export  fluxcd resources of cluster groups                   | READY  |                                                                                                                                                            |
-| [013-clustergroup-repository-credentials-export.sh](./013-clustergroup-repository-credentials-export.sh) | Export git repo credential resources of cluster groups       | READY  | SaaS API call required                                                                                                                                     |
+| [013-clustergroup-repository-credentials-export.sh](./013-clustergroup-repository-credentials-export.sh) | Export git repo credential resources of cluster groups       | READY  | REST API call against the source stack (via `utils/sm-api-call.sh`)                                                                                       |
 | [014-clustergroup-git-repositories-export.sh](./014-clustergroup-git-repositories-export.sh)             | Export git repository resources of cluster groups            | READY  |                                                                                                                                                            |
 | [015-clustergroup-kustomizations-export.sh](./015-clustergroup-kustomizations-export.sh)                 | Export kustomization resources of cluster groups             | READY  |                                                                                                                                                            |
 | [016-clustergroup-helms-export.sh](./016-clustergroup-helms-export.sh)                                   | Export helm resources of cluster groups                      | READY  |                                                                                                                                                            |
@@ -36,10 +36,10 @@ This is a repo to store the scripts in the [Migrate TMC SaaS to SM](https://docs
 | [028-base-access-policies-export.sh](./028-base-access-policies-export.sh)                                       | Export access policies                                                             | READY  |                                                                                                                                                            |
 | [029-base-policy-templates-export.sh](./029-base-policy-templates-export.sh)                                     | Export policy templates                                                            | READY |                                                                                                                                                            |
 | [030-base-policy-assignments-export.sh](./030-base-policy-assignments-export.sh)                                 | Export policy assignments                                                     | READY |                                                                                                                                                            |
-| [031-base-managed\_clusters-export.sh](./031-base-managed_clusters-export.sh)                        | Export the metadata of the managed TKG clusters from TMC SaaS before offboarding              | READY  | VKS (aka. TKGs) and TKGm clusters                                                                                                                          |
-| [031-base-managed\_clusters-offboard.sh](./031-base-managed_clusters-offboard.sh)                        | Offboard the managed TKG clusters from TMC SaaS              | READY  | VKS (aka. TKGs) and TKGm clusters                                                                                                                          |
-| [032-base-attached\_clusters-export.sh](./032-base-attached_clusters-export.sh)    | Export the metadata of the attached clusters from TMC SaaS before offboarding         | READY  | Attached clusters                                                                                                                                  |
-| [032-base-attached\_clusters-offboard.sh](./032-base-attached_clusters-offboard.sh)    | Offboard the attached clusters from TMC SaaS         | READY  | Attached clusters                                                                                                                                  |
+| [031-base-managed\_clusters-export.sh](./031-base-managed_clusters-export.sh)                        | Export the metadata of the managed TKG clusters from the source TMC SM before offboarding     | READY  | VKS (aka. TKGs) and TKGm clusters. Honors `TMC_MC_FILTER` and `TMC_WC_FILTER`.                                                                            |
+| [031-base-managed\_clusters-offboard.sh](./031-base-managed_clusters-offboard.sh)                        | Unmanage workload clusters from the source TMC SM; optionally deregister the MC               | READY  | VKS (aka. TKGs) and TKGm clusters. Honors `TMC_WC_FILTER`. MC deregister gated by `TMC_DEREGISTER_MC=true` and a completeness check — see notes below.    |
+| [032-base-attached\_clusters-export.sh](./032-base-attached_clusters-export.sh)    | Export the metadata of the attached clusters from the source TMC SM before offboarding        | READY  | Attached clusters                                                                                                                                          |
+| [032-base-attached\_clusters-offboard.sh](./032-base-attached_clusters-offboard.sh)    | Offboard the attached clusters from the source TMC SM                                         | READY  | Attached clusters                                                                                                                                          |
 | [033-base-sm\_stack-connect.sh](./033-base-sm_stack-connect.sh)                                          | Connect to the TMC SM stack                                                             |   READY     |                                                                                                                                                            |
 | [034-base-clustergroups-import.sh](./034-base-clustergroups-import.sh)                                   | Import cluster-groups into TMC SM                            | READY  |                                                                                                                                                            |
 | [035-base-workspaces-import.sh](./035-base-workspaces-import.sh)                                         | Import workspaces into TMC SM                                | READY  |                                                                                                                                                            |
@@ -58,7 +58,7 @@ This is a repo to store the scripts in the [Migrate TMC SaaS to SM](https://docs
 | [045-clustergroup-kustomizations-import.sh](./045-clustergroup-kustomizations-import.sh)                 | Import kustomization resources to cluster groups             | READY  |                                                                                                                                                            |
 | [046-clustergroup-helms-import.sh](./046-clustergroup-helms-import.sh)                                   | Import helm resources to cluster groups                      | READY  |                                                                                                                                                            |
 | [047-clustergroup-helm-releases-import.sh](./047-clustergroup-helm-releases-import.sh)                   | Import helm release resources to cluster groups              | READY  |                                                                                                                                                            |
-| [048-base-managed\_clusters-onboard.sh](./048-base-managed_clusters-onboard.sh)                          | Onboard the managed TKG clusters to TMC SM                   | READY    | - VKS (aka. TKGs) and TKGm clusters  - Prepare the required MC Kubeconfig index file with [048-base-managed\_clusters-input\_from\_user.sh](./048-base-managed_clusters-input_from_user.sh) - Ensure the annotations and agents of TMC SaaS on clusters get removed with [048-base-managed_clusters-ensure-cleanup.sh](./048-base-managed_clusters-ensure-cleanup.sh) |
+| [048-base-managed\_clusters-onboard.sh](./048-base-managed_clusters-onboard.sh)                          | Onboard the managed TKG clusters to TMC SM                   | READY    | - VKS (aka. TKGs) and TKGm clusters  - Prepare the required MC Kubeconfig index file with [048-base-managed\_clusters-input\_from\_user.sh](./048-base-managed_clusters-input_from_user.sh) - Ensure stale source-TMC annotations and agents on clusters get removed with [048-base-managed_clusters-ensure-cleanup.sh](./048-base-managed_clusters-ensure-cleanup.sh) |
 | [049-base-attached\_clusters-onboard.sh](./049-base-attached_clusters-onboard.sh)                         | Onboard the attached clusters to TMC SM              | READY    | Attached clusters  - Prepare the required WC Kubeconfig index file with [049-base-attached\_clusters-input\_from\_user.sh](./049-base-attached_clusters-input_from_user.sh)           |
 | [049-base-whole\_clusters-check\_readiness.sh](./049-base-whole_clusters-check_readiness.sh)                         | Check readiness of all onboarded clusters              | READY    | Include both managed clusters and attached clusters           |
 | [050-cluster-namespaces-import.sh](./050-cluster-namespaces-import.sh)                                   | Import managed namespace resources to clusters               | READY  |                                                                                                                                                            |
@@ -93,50 +93,62 @@ The scope includes:
 
 Operation includes:
 
-* Connect: script used to authenticate and connect to the TMC stack (SaaS or SM)
+* Connect: script used to authenticate and connect to a TMC stack (source or destination, both SM in this fork)
 
-* Export: script used to export the resources from SaaS
+* Export: script used to export resources from the source TMC SM stack
 
-* Import: script used to import the exported resource to SM
+* Import: script used to import previously-exported resources into the destination TMC SM stack
 
-* Offboard: unmanage the workload cluster and deregister management cluster from SaaS
+* Offboard: unmanage the workload cluster and (optionally, when explicitly opted in) deregister the management cluster from the source TMC SM
 
-* Onboard: register the management cluster to SM and manage the workload clusters
+* Onboard: register the management cluster into the destination TMC SM and manage the workload clusters
 
 ## Run the Scripts
 
 ### In Manual way
 
-1. Export the necessary environment variables to set up connection context of SaaS.
+1. Export the source-side connection env vars. Both source and destination are TMC Self-Managed, so source uses a distinct set of variable names to avoid colliding with the destination's `TMC_SELF_MANAGED_*` vars (step 5).
 
     ```shell
-    export TANZU_API_TOKEN=<CSP-TOKEN>
-    export ORG_NAME=<YOUR-ORG-IDENTITY>
+    export TMC_SOURCE_USERNAME=<source-admin-user@customer.com>
+    export TMC_SOURCE_PASSWORD=<SOURCE-PASSWORD>
+    export TMC_SOURCE_DNS=<source-tmc.tanzu.io>
+    # If the source IDP requires MFA:
+    # export TMC_SOURCE_IDP_MFA_ENABLED=true
     ```
 
-    Run script [001-base-saas\_stack-connect.sh](./001-base-saas_stack-connect.sh) to create a context for connecting the SaaS stack.
+    Run script [001-base-source\_stack-connect.sh](./001-base-source_stack-connect.sh) to create the `migration` tanzu CLI context against the source SM stack.
 
-    For STG environment, you can export below environment to override the PROD URL.
+2. Export resources from the source TMC SM stack by running scripts **002 - 030**. Three optional filters narrow the export when only a subset is being migrated (all comma-separated, all independent, AND-combined with one another):
 
     ```shell
-    export CSP_URL=https://console-stg.tanzu.broadcom.com/csp/gateway/am/api/auth/api-tokens/authorize
-    export TMC_ENDPOINT=trh.tmc-dev.tanzu.broadcom.com
+    # Cluster-group filter — honored by 002 and inline by 010–017.
+    export TMC_CG_FILTER="cg1,cg2"
+
+    # Management-cluster filter — honored by 031-export, utils/offboard-clusters.sh
+    # (and transitively 019/020/022).
+    export TMC_MC_FILTER="my_mc_1,my_mc_2"
+
+    # Workload-cluster filter — honored by 031-export, utils/offboard-clusters.sh,
+    # 031-offboard (unmanage loop), and 028/030 (their direct cluster list calls).
+    export TMC_WC_FILTER="wc_cluster_1,wc_cluster_2"
     ```
 
-2. Export the related resources from the SaaS stack by running scripts **002 - 030**.
+3. Export the managed clusters with script [031-base-managed\_clusters-export.sh](./031-base-managed_clusters-export.sh), then offboard them with script [031-base-managed\_clusters-offboard.sh](./031-base-managed_clusters-offboard.sh).
 
-3. Export the managed clusters with script [031-base-managed\_clusters-export.sh](./031-base-managed_clusters-export.sh). Then offboard the managed clusters from the SaaS stack by running script [031-base-managed\_clusters-offboard.sh](./031-base-managed_clusters-offboard.sh). Set
-    the environment variable `TMC_MC_FILTER` to export the specified clusters only.
+    By default `031-offboard` only **unmanages** workload clusters (respecting `TMC_WC_FILTER` when set); it does **not** deregister the management cluster itself. Deregister is the "we're done with this whole supervisor" step and is gated:
 
     ```shell
-    # Define the management cluster filter. e.g. "my_mc_1, my_mc_2".
-    export TMC_MC_FILTER="my_mc_1, my_mc_2"
+    # Optional, only when every WC under the MC has already been migrated:
+    export TMC_DEREGISTER_MC=true
     ```
 
-4. Export the managed cluster with script [032-base-attached\_clusters-export.sh](./032-base-attached_clusters-export.sh). Then offboard the attached clusters from the SaaS stack by running script [032-base-attached\_clusters-offboard.sh](./032-base-attached_clusters-offboard.sh). Set the environment variable `CLUSTER_NAME_FILTER` to export the specified attached clusters only.
+    With that flag set, the script also refuses deregister if `TMC_WC_FILTER` is set, or if any live WC under the MC is missing from the exported `data/clusters/wc_of_<mc>.yaml`. Re-run `031-export` (without `TMC_WC_FILTER`) before retrying.
+
+4. Export the attached clusters with script [032-base-attached\_clusters-export.sh](./032-base-attached_clusters-export.sh). Then offboard the attached clusters from the source TMC SM by running script [032-base-attached\_clusters-offboard.sh](./032-base-attached_clusters-offboard.sh). Set the environment variable `CLUSTER_NAME_FILTER` to export the specified attached clusters only.
 
     ```shell
-    export CLUSTER_NAME_FILTER="attached1, attached2"
+    export CLUSTER_NAME_FILTER="attached1,attached2"
     ```
 
 5. Export the necessary environment variables to set up connection context of SM.
@@ -371,7 +383,7 @@ Operation includes:
 
 12. Run script [048-base-managed\_clusters-input\_from\_user.sh](./048-base-managed_clusters-input_from_user.sh) to generate a Kubeconfig index file for the onboarding management clusters. Replace the path placeholders `/path/to/the/real/mc_kubeconfig/file` in the generated Kubeconfig index file.
 
-    Then run script [048-base-managed_clusters-ensure-cleanup.sh](./048-base-managed_clusters-ensure-cleanup.sh) to check and ensure the annotations and agents of TMC SaaS on clusters get removed.
+    Then run script [048-base-managed_clusters-ensure-cleanup.sh](./048-base-managed_clusters-ensure-cleanup.sh) to check and ensure the stale source-TMC annotations and agents on clusters get removed.
 
     Then run script [048-base-managed\_clusters-onboard.sh](./048-base-managed_clusters-onboard.sh) to onboard the exported clusters onto SM.
     
@@ -449,7 +461,7 @@ Operation includes:
 
 18. Import resources `[cluster:git, cluster:kustomization, cluster:helm, cluster:helm-release, admin:settings, admin:access]` into SM by running scripts **055-060**
 
-19. Import resources `[access policies, policy templates, policy assignments]` into SM by running scripts **061-063**.  **Notes**: The initial access policies are imported with the identities settings from TMC SaaS, the customer should manually edit the access policies with correct user and usergroup identities in the idP of TMC SM. To run the scripts **061-\***, it's required to export below environment variables, which should be the same values as the settings idpGroupRoles.admin and idpGroupRoles.member of TMC SM deployment.
+19. Import resources `[access policies, policy templates, policy assignments]` into the destination SM by running scripts **061-063**.  **Notes**: The initial access policies are imported with the identity settings from the source TMC SM; the customer should manually edit the access policies with correct user and usergroup identities in the destination TMC SM's idP. To run the scripts **061-\***, also export the below env vars, which should be the same values as the settings idpGroupRoles.admin and idpGroupRoles.member of the destination TMC SM deployment.
     ```shell
     export ADMIN_IDP_GROUP="tmc:admin"
     export MEMBER_IDP_GROUP="tmc:member"
@@ -472,4 +484,4 @@ Operation includes:
     jupyter lab --no-browser --ip=0.0.0.0 --port=80 --allow-root
     ```
 
-1. Open notebook `tmc-saas-migration-toi.ipynb` to run migration steps.
+1. Open notebook `tmc-sm-migration.ipynb` to run migration steps.
