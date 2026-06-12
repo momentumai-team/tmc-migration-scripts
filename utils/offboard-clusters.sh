@@ -1,6 +1,7 @@
 #!/bin/bash
 source $(dirname "${BASH_SOURCE[0]}")/log.sh
 source $(dirname "${BASH_SOURCE[0]}")/common.sh
+source $(dirname "${BASH_SOURCE[0]}")/filter.sh
 
 download_offboard_clusters () {
     local FILE=$(data_dir)/offboard_clusters.txt
@@ -9,9 +10,15 @@ download_offboard_clusters () {
     rm -rf $FILE
     touch $FILE
 
+    # TMC_WC_FILTER narrows the managed workload-cluster set to a subset of
+    # names within each TMC_MC_FILTER-matched management cluster. Empty filter
+    # is a no-op (passthrough).
+    local WC_FILTER
+    WC_FILTER=$(yq_filter_or_passthrough '.fullName.name' "$TMC_WC_FILTER")
+
     IFS=',' read -r -a MGMT_CLUSTERS <<< "$TMC_MC_FILTER"
     for MGMT in "${MGMT_CLUSTERS[@]}"; do
-        tanzu tmc cluster list -m $MGMT -o yaml | yq '.clusters[] | [.fullName.managementClusterName, .fullName.provisionerName, .fullName.name] | @tsv' - > $FILE
+        tanzu tmc cluster list -m $MGMT -o yaml | yq ".clusters[] | $WC_FILTER | [.fullName.managementClusterName, .fullName.provisionerName, .fullName.name] | @tsv" - > $FILE
     done
 
     IFS="," read -r -a CLUSTER_NAMES <<< "$CLUSTER_NAME_FILTER"

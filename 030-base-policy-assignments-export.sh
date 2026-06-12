@@ -1,6 +1,7 @@
 #! /bin/bash
 
 source utils/log.sh
+source utils/filter.sh
 
 register_last_words "Export policy assignments"
 
@@ -53,7 +54,15 @@ mkdir -p $cluster_scope
 
 log info "Exporting policies on clusters ..."
 clusters="$cluster_scope/clusters.yaml"
-tanzu tmc cluster list -oyaml > $clusters
+# Apply TMC_WC_FILTER post-hoc — `tanzu tmc cluster list` does not inherit the
+# filter applied by 031-export, so without this every cluster (including prod)
+# would have its policy assignments exported.
+WC_FILTER=$(yq_filter_or_passthrough '.fullName.name' "$TMC_WC_FILTER")
+tanzu tmc cluster list -oyaml \
+    | yq -o json ".clusters[] | $WC_FILTER" \
+    | jq -c '.' \
+    | jq -s '{"clusters": .}' \
+    | yq -P > $clusters
 yq '.clusters[] | [.fullName.managementClusterName, .fullName.provisionerName, .fullName.name] | @tsv' $clusters | \
 while IFS=$'\t' read -r mgmt prvn name
 do

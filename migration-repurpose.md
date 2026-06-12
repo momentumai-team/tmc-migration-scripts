@@ -37,11 +37,15 @@ Re-run scripts after fixing inputs — most are idempotent on the SM side (skip-
 - **CLI tools required:** `tanzu` CLI (with `tmc` plugin), `yq`, `jq`, `kubectl`, `openssl`, `curl`, `base64`.
 - **Two tanzu contexts:** `migration` (source) and `tmc-sm` (destination). `utils/context.sh` provides `use_tmc_source_context` (activates `migration`) and `use_tmc_sm_context` (activates `tmc-sm`) — these switch the CLI's active context, so don't run source and destination scripts interleaved without checking. The name pair is asymmetric on purpose: both sides are SM, but the destination context name `tmc-sm` and its helper predate this fork; the source helper was renamed from the misleading upstream `use_tmc_saas_context` to reflect its actual role.
 - **Logging:** `utils/log.sh` exposes `log info|warn|error|debug`. Set `DEBUG=on` for verbose. Don't replace with `echo` in new scripts.
-- **Existing filters (env vars):**
+- **Filters (env vars):**
 
-  - `TMC_MC_FILTER` — comma-separated management cluster names (`031`, `019`, `020`, `022`, `utils/offboard-clusters.sh`).
-  - `CLUSTER_NAME_FILTER` — comma-separated attached cluster names (`032`, `019`, `020`, `022`, `utils/offboard-clusters.sh`).
-  - **No cluster-group filter exists today** — this is the main gap for the fork.
+  - `TMC_MC_FILTER` — comma-separated management cluster names. Honored by `031-export`, `utils/offboard-clusters.sh` (and transitively `019`/`020`/`022`).
+  - `CLUSTER_NAME_FILTER` — comma-separated attached cluster names. Honored by `032`, `utils/offboard-clusters.sh`.
+  - `TMC_CG_FILTER` *(new in this fork)* — comma-separated cluster-group names. Honored by `002` (filters the exported CG list) and inline by `010`–`017` (filters per-CG resource lists). Whitespace around names is tolerated.
+  - `TMC_WC_FILTER` *(new in this fork)* — comma-separated workload-cluster names. Honored by `031-export` (filters `wc_of_<mc>.yaml`), `utils/offboard-clusters.sh` (filters the managed-WC TSV), `031-offboard` (filters the unmanage loop, refuses MC deregister when set), and `028`/`030` (filters the direct `tanzu tmc cluster list` calls that don't read the already-filtered files).
+  - `TMC_DEREGISTER_MC` *(new in this fork)* — must be set to `true` to allow `031-offboard` to deregister the management cluster. Default behavior is "unmanage workload clusters only." Combined with the completeness check below, this enforces "every WC under the supervisor MC has been exported before the MC itself is deregistered."
+  - All filters are independent axes, AND-combined. The yq/regex pattern they expand into is whole-name (`^(a|b|c)$`), so partial matches don't surprise.
+  - Helper: `utils/filter.sh` exposes `build_filter_pattern` and `yq_filter_or_passthrough` so call sites compose a yq pipeline without conditional branches — `yq ".clusters[] | $FILTER"` works whether the filter is set or empty.
 
 - **Hardcoded skip list:** `031` and `048` skip MC names equal to `attached`, `eks`, `aks` (synthetic MCs in TMC for non-MC-managed clusters). Preserve this behavior when filtering.
 - **Connection env vars:**
@@ -58,17 +62,19 @@ Tracked here so the rest of the document keeps its forward-looking framing witho
 - **`utils/sm-api-call.sh` is now context-aware.** Previously hardcoded to read auth from the `tmc-sm` context; now derives the context name via `tanzu context current --short`. This lets the same helper serve both source-side callers (`migration` context) and destination-side callers (`tmc-sm` context).
 - **`utils/saas-api-call.sh` deleted.** Source-side scripts that needed REST APIs against the source (`006-admin-access-export.sh`, `012-clustergroup-continuous-deliveries-export.sh`, `027-cluster-data_protection-export.sh`, `028-base-access-policies-export.sh`) now source `utils/sm-api-call.sh` instead. The old helper's CSP-token flow no longer matches the source's auth model.
 - **Misleading "TMC SaaS" log/echo strings updated to "source TMC SM"** across the affected export scripts so operator output reflects reality.
-- **Source-side filename and function renames** so nothing on the source path still says "saas":
-  - `001-base-saas_stack-connect.sh` → `001-base-source_stack-connect.sh` (via `git mv`)
-  - `export-all-from-saas.sh` → `export-all-from-source.sh` (via `git mv`); self-referential usage comment updated, and the comment referencing `001-base-saas_stack-connect.sh` updated to the new filename
-  - `utils/context.sh::use_tmc_saas_context` → `use_tmc_source_context`; its "context not found" error message now points at the new `001` filename; both callers (`031-base-managed_clusters-export.sh`, `031-base-managed_clusters-offboard.sh`) updated
-  - `.sh` files now contain zero case-insensitive matches for `saas`. README and the Jupyter notebook still reference SaaS and are intentionally out of scope for this round.
+- **`TMC_CG_FILTER` and `TMC_WC_FILTER` added** as independent narrowing axes on top of `TMC_MC_FILTER`. Threaded through the export-side scripts listed in the env-var bullet above. Shared regex/passthrough logic lives in `utils/filter.sh`.
+- **`031-base-managed_clusters-offboard.sh` split into "unmanage" and "deregister" phases.** The unmanage loop honors `TMC_WC_FILTER`. MC deregister is gated by `TMC_DEREGISTER_MC=true` and a completeness check that refuses deregister if (a) `TMC_WC_FILTER` is set (the operator only targeted a subset, so the MC isn't actually done) or (b) any workload cluster currently live under the MC is missing from the exported `data/clusters/wc_of_<mc>.yaml` (the export wasn't refreshed). This encodes the "every WC managed by the supervisor MC must be exported before the MC is deregistered" invariant directly into the script.
+- **`028-base-access-policies-export.sh` and `030-base-policy-assignments-export.sh` now honor `TMC_WC_FILTER`** on the direct `tanzu tmc cluster list` they each issue — without this they would silently re-include prod clusters even when the rest of the pipeline was filtered. (`TMC_MC_FILTER` honoring in these two scripts is still a separate latent gap; see TODO below.)
 
 What is still TODO (in order of how blocking they are for an end-to-end run):
 
-1. `README.md` still walks through the SaaS-source flow (CSP token, `ORG_NAME`, etc.) — needs to be reworked once the per-cluster runbook (see below) is implemented and validated.
-2. `tmc-saas-migration-toi.ipynb` notebook is still framed around the SaaS-source flow and is named for it. Rename and rework in the same pass as the README.
-3. Everything in the [Fork-specific goal](#fork-specific-goal-non-prod-only-one-cluster-at-a-time) section below — filtering, per-cluster runbook, MC-deregister split — is still ahead.
+1. `utils/context.sh::use_tmc_saas_context` is still misnamed — it works, but the name is misleading and its error message tells the operator to run `001-base-saas_stack-connect.sh`, which is now an SM-auth script. Rename or update the message in a follow-up.
+2. `export-all-from-saas.sh` is still named for SaaS and references `001-base-saas_stack-connect.sh` in a comment. The orchestrator itself doesn't care about source type; just stale labelling.
+3. **Import-side filters not yet threaded.** Today imports (`034`, `040`–`047`, `050`–`058`, `061-cluster`, `063-cluster`, `064`) iterate whatever sits under `data/`. Filtered exports therefore produce filtered imports without further work — but if an operator runs imports against a `data/` tree built by a different filter, that assumption breaks silently. Add explicit filter enforcement on the import side once a real need surfaces.
+4. **`027-cluster-data_protection-export.sh` is not yet filtered.** It iterates clusters via the backup-location assignments rather than the filtered `wc_of_<mc>.yaml`, so prod clusters assigned to org-scope backup locations would still be exported. Defer until data-protection is actually in scope for the migration.
+5. **`032-base-attached_clusters-*` still uses only `CLUSTER_NAME_FILTER`.** Attached clusters are a separate offboarding path; align with `TMC_WC_FILTER` later if/when attached clusters move through this fork.
+6. **`048-base-managed_clusters-onboard.sh` does not yet honor `TMC_WC_FILTER`** for the workload-cluster loop. Per the per-cluster runbook below, onboard needs the same narrowing so per-cluster runs only onboard the single target WC.
+7. `README.md` still walks through the SaaS-source flow (CSP token, `ORG_NAME`, etc.) — needs to be reworked once the per-cluster runbook (see below) is implemented and validated.
 
 ## Fork-specific goal: non-prod only, one cluster at a time
 
@@ -85,16 +91,16 @@ This reshapes the pipeline into two distinct kinds of runs:
 
 - `031` and the per-cluster export scripts (`019`, `020`, `022`) already filter by `TMC_MC_FILTER`. Setting this to the non-prod management cluster name gets you the right managed/workload clusters and their per-cluster resources.
 
-**What's missing (the meaningful gaps):**
+**What's missing (the meaningful gaps).** Originally captured as the gap analysis before any fork work; status annotations track what's since been closed.
 
-1. **No cluster-group filter.** `002-base-clustergroups-export.sh` does `tanzu tmc clustergroup list -o yaml > ...` — it exports prod and non-prod groups together. Then every `010`–`017` script iterates the whole exported list. Then `034` and `040`–`047` import all of them into the destination. Need a `TMC_CG_FILTER` (or similar) env var honored end-to-end.
-2. **No single-cluster filter.** `TMC_MC_FILTER` narrows to a management cluster, but within an MC there is no way to say "just this one workload cluster." `031-base-managed_clusters-offboard.sh:50` iterates *every* WC under the matched MC and unmanages it, then `:68` deregisters the MC entirely. `048-base-managed_clusters-onboard.sh:198` does the symmetric thing on the destination. Per-cluster mode needs a `TMC_WC_FILTER` (single name, or `mgmt/provisioner/name` triple) that both offboard and onboard honor, and the offboard script must **not** deregister the MC when only a subset of its WCs are being moved.
+1. ~~**No cluster-group filter.**~~ **RESOLVED.** `TMC_CG_FILTER` now narrows `002` and `010`–`017` on the export side. Imports still iterate `data/`, which inherits the narrowing.
+2. ~~**No single-cluster filter.**~~ **PARTIALLY RESOLVED.** `TMC_WC_FILTER` is honored on the export side (`031-export`, `utils/offboard-clusters.sh`, `028`, `030`) and on the unmanage side (`031-offboard`). MC deregister is now gated by `TMC_DEREGISTER_MC=true` plus a completeness check. The destination-side onboard loop in `048` does **not** yet honor `TMC_WC_FILTER` — still outstanding.
 3. **Workspaces (`003`, `035`, `040`-namespace etc.).** Workspaces are an org-wide concept in TMC, not bound to a cluster group. For per-cluster runs, the workspace(s) referenced by the target cluster's namespaces must already exist in the destination. Simplest: import all non-prod-referenced workspaces during the one-time preparation, derived from `data/cluster-namespaces/`.
-4. **Access policies (`028`, `061`)** and **policy assignments (`030`, `063`)** iterate all cluster groups and all clusters from their exported lists. Once `002`/`031` are filtered, these scripts inherit the filter via their input files — *if* they read the already-filtered lists. Verify they do; the policy scripts currently re-list (`tanzu tmc cluster list -oyaml` in `028` and `030`), which would re-include prod.
+4. ~~**Access policies (`028`, `061`)** and **policy assignments (`030`, `063`)** iterate all cluster groups and all clusters from their exported lists.~~ **PARTIALLY RESOLVED.** The CG iteration already inherited filtering through `data/clustergroup/clustergroups.yaml`. The cluster iteration via direct `tanzu tmc cluster list -oyaml` in `028`/`030` now honors `TMC_WC_FILTER`. Symmetric work on the import side (`061`/`063`) is still outstanding.
 5. **Admin resources (`004`–`009`, `036`–`039`, `059`–`060`).** Roles, credentials, proxy, image registry, settings, access — all org-wide. Most likely want to copy verbatim during preparation, but credentials/proxy/registry referenced only by prod could be skipped. Lowest priority.
 6. **Hardcoded `attached`/`eks`/`aks` exclusion stays correct,** but the per-MC iteration in `031` line 41 and `048` will need to additionally filter cluster-group and single-cluster membership when narrowing.
 7. **`048-base-managed_clusters-onboard.sh` re-registers the MC every run.** In per-cluster mode, the MC should be registered exactly once (during preparation) and skipped on subsequent per-cluster runs. The script already checks MC health and skips re-registration when `HEALTHY` (`:240`), which mostly handles this — verify it stays a no-op once the MC is established.
-8. **`utils/common.sh::ONBOARDED_CLUSTER_INDEX_FILE`** is append-only, which is friendly to repeated per-cluster runs, but the per-cluster export scripts (`019`, `020`, `022`) iterate everything in `offboard-clusters.sh` output rather than a single cluster — they will need to honor the same `TMC_WC_FILTER`.
+8. ~~**`utils/common.sh::ONBOARDED_CLUSTER_INDEX_FILE`** is append-only, which is friendly to repeated per-cluster runs, but the per-cluster export scripts (`019`, `020`, `022`) iterate everything in `offboard-clusters.sh` output rather than a single cluster — they will need to honor the same `TMC_WC_FILTER`.~~ **RESOLVED.** `019`/`020`/`022` consume `download_offboard_clusters` from `utils/offboard-clusters.sh`, which now applies `TMC_WC_FILTER`.
 
 **Recommendations to consider before coding:**
 

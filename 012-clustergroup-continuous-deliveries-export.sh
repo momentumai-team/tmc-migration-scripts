@@ -4,10 +4,12 @@ set -eE -o pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 source $SCRIPT_DIR/utils/common.sh
 source $SCRIPT_DIR/utils/sm-api-call.sh
+source $SCRIPT_DIR/utils/filter.sh
 
 init "[012] Export the cluster group continuous deliveries" "true"
 
-tanzu tmc clustergroup list -o yaml | yq '.clusterGroups[].fullName.name' > cluster_groups.txt
+FILTER=$(yq_filter_or_passthrough '.fullName.name' "$TMC_CG_FILTER")
+tanzu tmc clustergroup list -o yaml | yq ".clusterGroups[] | $FILTER | .fullName.name" > cluster_groups.txt
 
 while read cg; do
   log info "Export continuous delivery for cluster group '$cg'"

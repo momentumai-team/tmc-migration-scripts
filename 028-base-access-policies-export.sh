@@ -3,6 +3,7 @@ set +x
 
 source utils/log.sh
 source utils/sm-api-call.sh
+source utils/filter.sh
 
 register_last_words "Export access policies"
 INTERVAL=2
@@ -74,7 +75,15 @@ mkdir -p $cluster_scope
 
 log info "Exporting rolebindings on clusters ..."
 clusters="$cluster_scope/clusters.yaml"
-tanzu tmc cluster list -oyaml > $clusters
+# This call lists every cluster the source TMC knows about — it does NOT
+# inherit the TMC_MC_FILTER applied by 031-export. Apply TMC_WC_FILTER post-hoc
+# so role-binding export tracks the cluster filter when one is set.
+WC_FILTER=$(yq_filter_or_passthrough '.fullName.name' "$TMC_WC_FILTER")
+tanzu tmc cluster list -oyaml \
+    | yq -o json ".clusters[] | $WC_FILTER" \
+    | jq -c '.' \
+    | jq -s '{"clusters": .}' \
+    | yq -P > $clusters
 
 yq '.clusters[] | [.fullName.managementClusterName, .fullName.provisionerName, .fullName.name, .meta.uid] | @tsv' $clusters | \
 while IFS=$'\t' read -r mgmt prvn name uid
