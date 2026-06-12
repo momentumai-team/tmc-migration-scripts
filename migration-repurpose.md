@@ -18,8 +18,8 @@ Scripts are numbered `<NNN>-<scope>-<resource>-<operation>.sh` and meant to run 
 
 | Range | Phase | Notes |
 | --- | --- | --- |
-| `001` | Connect to source | Upstream: SaaS auth. For this fork: SM auth (source is SM 1.4.2). Creates tanzu CLI context named `migration`. |
-| `002`–`030` | Export resources from source | Cluster groups, workspaces, admin (roles/creds/proxy/registry/settings), per-cluster-group resources (secrets, FluxCD, git, helm), per-cluster resources, data protection, access policies, policy templates, policy assignments. Driven by `export-all-from-saas.sh` (name is now a misnomer — source is SM in this fork). |
+| `001` | Connect to source | **Reworked in this fork.** Now does SM auth against the source SM 1.4.2 stack (was SaaS/CSP token auth upstream). Reads `TMC_SOURCE_USERNAME` / `TMC_SOURCE_PASSWORD` / `TMC_SOURCE_DNS` (and optional `TMC_SOURCE_IDP_MFA_ENABLED`). Creates tanzu CLI context named `migration`. Renamed `001-base-saas_stack-connect.sh` → `001-base-source_stack-connect.sh`. |
+| `002`–`030` | Export resources from source | Cluster groups, workspaces, admin (roles/creds/proxy/registry/settings), per-cluster-group resources (secrets, FluxCD, git, helm), per-cluster resources, data protection, access policies, policy templates, policy assignments. Driven by `export-all-from-source.sh` (renamed from `export-all-from-saas.sh`). REST-API-using scripts (`006`, `012`, `027`, `028`) now source `utils/sm-api-call.sh` against the active `migration` context; the old `utils/saas-api-call.sh` (CSP-token-based) has been removed. |
 | `031` | Managed cluster export + offboard | `TMC_MC_FILTER` env var selects management clusters by name. Excludes the synthetic `attached`/`eks`/`aks` MC names. |
 | `032` | Attached cluster export + offboard | `CLUSTER_NAME_FILTER` env var selects by name. |
 | `033` | Connect to destination (SM) | Creates tanzu CLI context named `tmc-sm` |
@@ -35,7 +35,7 @@ Re-run scripts after fixing inputs — most are idempotent on the SM side (skip-
 - **Shell:** bash. Scripts source helpers from `utils/`; not all scripts use `set -e` consistently — some use `set -eE -o pipefail`, others rely on manual exit codes. Don't tighten this without checking downstream.
 - **Data layout:** every script writes under `./data/<resource>/...` relative to the script. `utils/common.sh::data_dir` derives the subdirectory from the script filename (drops trailing token like `-export`).
 - **CLI tools required:** `tanzu` CLI (with `tmc` plugin), `yq`, `jq`, `kubectl`, `openssl`, `curl`, `base64`.
-- **Two tanzu contexts:** `migration` (source) and `tmc-sm` (destination). `utils/context.sh` provides `use_tmc_saas_context` / `use_tmc_sm_context` — these switch the CLI's active context, so don't run source and destination scripts interleaved without checking. **Note:** `use_tmc_saas_context` is misnamed in this fork — the source is SM, not SaaS. The function still works (it just activates the `migration` context), but the name and any SaaS-specific auth assumptions inside it need attention.
+- **Two tanzu contexts:** `migration` (source) and `tmc-sm` (destination). `utils/context.sh` provides `use_tmc_source_context` (activates `migration`) and `use_tmc_sm_context` (activates `tmc-sm`) — these switch the CLI's active context, so don't run source and destination scripts interleaved without checking. The name pair is asymmetric on purpose: both sides are SM, but the destination context name `tmc-sm` and its helper predate this fork; the source helper was renamed from the misleading upstream `use_tmc_saas_context` to reflect its actual role.
 - **Logging:** `utils/log.sh` exposes `log info|warn|error|debug`. Set `DEBUG=on` for verbose. Don't replace with `echo` in new scripts.
 - **Existing filters (env vars):**
 
@@ -46,9 +46,29 @@ Re-run scripts after fixing inputs — most are idempotent on the SM side (skip-
 - **Hardcoded skip list:** `031` and `048` skip MC names equal to `attached`, `eks`, `aks` (synthetic MCs in TMC for non-MC-managed clusters). Preserve this behavior when filtering.
 - **Connection env vars:**
 
-  - Source (upstream, SaaS): `TANZU_API_TOKEN`, `ORG_NAME` (or `TMC_ENDPOINT`), optional `TMC_ENV`, `CSP_URL`.
-  - Destination: `TMC_SELF_MANAGED_USERNAME`, `TMC_SELF_MANAGED_PASSWORD`, `TMC_SELF_MANAGED_DNS`, optional `TMC_SM_IDP_MFA_ENABLED`.
-  - **For this fork (SM source on 1.4.2):** `001` needs to authenticate the `migration` context with SM-style credentials, not SaaS. The pattern in `033` (SM destination connect) is the closest reference — separate env vars for source vs. destination (e.g. `TMC_SOURCE_USERNAME`, `TMC_SOURCE_PASSWORD`, `TMC_SOURCE_DNS`, `TMC_SOURCE_IDP_MFA_ENABLED`) keep the two contexts independently configurable without colliding with the existing destination vars.
+  - Source (this fork, SM 1.4.2): `TMC_SOURCE_USERNAME`, `TMC_SOURCE_PASSWORD`, `TMC_SOURCE_DNS`, optional `TMC_SOURCE_IDP_MFA_ENABLED`. Consumed only by `001`, which maps them onto the `TMC_SELF_MANAGED_*` names the `tanzu tmc context create --basic-auth` command reads — for the duration of that single invocation — so the destination's `TMC_SELF_MANAGED_*` vars (set for `033`) stay distinct in the operator's shell.
+  - Destination: `TMC_SELF_MANAGED_USERNAME`, `TMC_SELF_MANAGED_PASSWORD`, `TMC_SELF_MANAGED_DNS`, optional `TMC_SM_IDP_MFA_ENABLED`. Consumed by `033`.
+  - Upstream (no longer used in this fork): `TANZU_API_TOKEN`, `ORG_NAME` / `TMC_ENDPOINT`, `TMC_ENV`, `CSP_URL`. These were the SaaS/CSP-token inputs to upstream's `001` and `utils/saas-api-call.sh`. Both are gone; do not export them.
+
+## Changes made in this fork so far
+
+Tracked here so the rest of the document keeps its forward-looking framing without losing sight of what's already landed.
+
+- **`001-base-saas_stack-connect.sh` rewritten for SM source auth.** Replaces the CSP/refresh-token flow with `tanzu tmc context create ... -i pinniped --basic-auth` against the source SM stack. New env vars: `TMC_SOURCE_USERNAME`, `TMC_SOURCE_PASSWORD`, `TMC_SOURCE_DNS`, optional `TMC_SOURCE_IDP_MFA_ENABLED`. Filename is intentionally unchanged for now.
+- **`utils/sm-api-call.sh` is now context-aware.** Previously hardcoded to read auth from the `tmc-sm` context; now derives the context name via `tanzu context current --short`. This lets the same helper serve both source-side callers (`migration` context) and destination-side callers (`tmc-sm` context).
+- **`utils/saas-api-call.sh` deleted.** Source-side scripts that needed REST APIs against the source (`006-admin-access-export.sh`, `012-clustergroup-continuous-deliveries-export.sh`, `027-cluster-data_protection-export.sh`, `028-base-access-policies-export.sh`) now source `utils/sm-api-call.sh` instead. The old helper's CSP-token flow no longer matches the source's auth model.
+- **Misleading "TMC SaaS" log/echo strings updated to "source TMC SM"** across the affected export scripts so operator output reflects reality.
+- **Source-side filename and function renames** so nothing on the source path still says "saas":
+  - `001-base-saas_stack-connect.sh` → `001-base-source_stack-connect.sh` (via `git mv`)
+  - `export-all-from-saas.sh` → `export-all-from-source.sh` (via `git mv`); self-referential usage comment updated, and the comment referencing `001-base-saas_stack-connect.sh` updated to the new filename
+  - `utils/context.sh::use_tmc_saas_context` → `use_tmc_source_context`; its "context not found" error message now points at the new `001` filename; both callers (`031-base-managed_clusters-export.sh`, `031-base-managed_clusters-offboard.sh`) updated
+  - `.sh` files now contain zero case-insensitive matches for `saas`. README and the Jupyter notebook still reference SaaS and are intentionally out of scope for this round.
+
+What is still TODO (in order of how blocking they are for an end-to-end run):
+
+1. `README.md` still walks through the SaaS-source flow (CSP token, `ORG_NAME`, etc.) — needs to be reworked once the per-cluster runbook (see below) is implemented and validated.
+2. `tmc-saas-migration-toi.ipynb` notebook is still framed around the SaaS-source flow and is named for it. Rename and rework in the same pass as the README.
+3. Everything in the [Fork-specific goal](#fork-specific-goal-non-prod-only-one-cluster-at-a-time) section below — filtering, per-cluster runbook, MC-deregister split — is still ahead.
 
 ## Fork-specific goal: non-prod only, one cluster at a time
 
@@ -85,7 +105,7 @@ This reshapes the pipeline into two distinct kinds of runs:
 - Split `031-base-managed_clusters-offboard.sh` into two behaviors: (a) WC unmanage (the inner `while read` block at `:52`-`:55`), which runs per-cluster; (b) MC deregister (`:67`-`:68`), which runs once at the very end of the non-prod migration, gated by an explicit `TMC_DEREGISTER_MC=true` env var. Default to (a) only.
 - **Offboarding is destructive.** Add a dry-run / confirm step that prints exactly which workload cluster(s) are about to be unmanaged from which MC before `tanzu tmc mc wc unmanage` runs. In per-cluster mode, this should print exactly one line.
 - Add an orchestrator script (companion to `export-all-from-saas.sh`) that runs only the preparation phase, and a second one that runs a single per-cluster cycle given `TMC_WC_FILTER`. Keep them thin — just sequenced calls to the existing numbered scripts.
-- The README still describes a SaaS→SM migration. For this fork, the source is **TMC SM 1.4.2** and the destination is TMC SM — both sides are SM. The upstream connect scripts (`001`, `033`) are written for SaaS-source / SM-destination; `001` needs to be rewritten (or `033`'s SM auth flow parameterized for source vs. destination) before any export script will work. This is a prerequisite to all other fork work, since nothing runs until `001` can establish the `migration` context against the SM source.
+- The README still describes a SaaS→SM migration. For this fork, the source is **TMC SM 1.4.2** and the destination is TMC SM — both sides are SM. The connect scripts (`001`, `033`) now both do SM auth — `001` reads `TMC_SOURCE_*`, `033` reads `TMC_SELF_MANAGED_*` — and the README's SaaS-source flow no longer reflects what `001` does. README rewrite is still outstanding.
 
 ## Suggested per-cluster runbook (target shape)
 

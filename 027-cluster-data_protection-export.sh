@@ -2,14 +2,7 @@
 
 set +e
 
-# For test only
-#ORG_NAME="not-used"
-#CSP_URL="https://console-stg.tanzu.broadcom.com/csp/gateway/am/api/auth/api-tokens/authorize"
-#TANZU_API_TOKEN="${MY_CSP_TOKEN}"
-#TMC_ENDPOINT="trh.tmc-dev.tanzu.broadcom.com"
-#TMC_ENDPOINT="tanzumissioncontroluserorgstg.tmc-dev.tanzu.broadcom.com"
-
-source utils/saas-api-call.sh
+source utils/sm-api-call.sh
 
 DPDIR=data/data-protection
 rm -fr ${DPDIR}

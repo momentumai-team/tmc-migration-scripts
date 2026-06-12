@@ -2,7 +2,7 @@
 set +x
 
 source utils/log.sh
-source utils/saas-api-call.sh
+source utils/sm-api-call.sh
 
 register_last_words "Export access policies"
 INTERVAL=2
@@ -26,7 +26,7 @@ export_rolebindings() {
 }
 
 log "************************************************************************"
-log "* Exporting Access Policies from TMC SaaS ..."
+log "* Exporting Access Policies from source TMC SM ..."
 log "************************************************************************"
 
 DATA_DIR="data"

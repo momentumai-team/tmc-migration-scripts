@@ -2,10 +2,10 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")"/log.sh
 
-function use_tmc_saas_context () {
+function use_tmc_source_context () {
   local TMC_CONTEXT="migration"
   if ! tanzu context list -o yaml | yq '.[].name' | grep -qx "$TMC_CONTEXT"; then
-    log error "❌ Tanzu context '$TMC_CONTEXT' is not found, please run script 001-base-saas_stack-connect.sh to setup the '$TMC_CONTEXT' context"
+    log error "❌ Tanzu context '$TMC_CONTEXT' is not found, please run script 001-base-source_stack-connect.sh to setup the '$TMC_CONTEXT' context"
     exit 1
   fi
 

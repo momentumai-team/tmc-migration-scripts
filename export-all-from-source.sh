@@ -4,11 +4,11 @@ set -euo pipefail
 
 # Simple runner to execute scripts 002 through 030 in order.
 # Usage:
-#   ./export-all-from-saas.sh            # stop on first error
-#   ./export-all-from-saas.sh --continue-on-error
+#   ./export-all-from-source.sh            # stop on first error
+#   ./export-all-from-source.sh --continue-on-error
 #
 # Notes:
-# - Assumes prerequisites are met (e.g., 001-base-saas_stack-connect.sh already run).
+# - Assumes prerequisites are met (e.g., 001-base-source_stack-connect.sh already run).
 # - Stops on first failure by default. Use --continue-on-error to keep going.
 
 CONTINUE_ON_ERROR=false

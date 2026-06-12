@@ -12,7 +12,7 @@ fi
 mkdir -p $DATA_DIR
 
 echo "************************************************************************"
-echo "* Exporting Admin Settings from TMC SaaS ..."
+echo "* Exporting Admin Settings from source TMC SM ..."
 echo "************************************************************************"
 
 for scope in "${scopes[@]}"; do
@@ -25,4 +25,4 @@ for scope in "${scopes[@]}"; do
 done
 
 relative_path="${DATA_DIR#*migration-scripts/}"
-echo "Exported Admin Settings from TMC SaaS: $relative_path/*.yaml"
+echo "Exported Admin Settings from source TMC SM: $relative_path/*.yaml"

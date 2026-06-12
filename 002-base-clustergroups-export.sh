@@ -10,10 +10,10 @@ fi
 mkdir -p $DATA_DIR
 
 echo "************************************************************************"
-echo "* Exporting ClusterGroups from TMC SaaS ..."
+echo "* Exporting ClusterGroups from source TMC SM ..."
 echo "************************************************************************"
 
 tanzu tmc clustergroup list -o yaml > "$DATA_DIR/clustergroups.yaml"
 
 relative_path="${DATA_DIR#*migration-scripts/}"
-echo "Exported ClusterGroups from TMC SaaS: $relative_path/*.yaml"
+echo "Exported ClusterGroups from source TMC SM: $relative_path/*.yaml"

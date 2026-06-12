@@ -12,7 +12,7 @@ fi
 mkdir -p $DATA_DIR
 
 echo "************************************************************************"
-echo "* Exporting Customized Roles from TMC SaaS ..."
+echo "* Exporting Customized Roles from source TMC SM ..."
 echo "************************************************************************"
 
 tanzu tmc iam role list -o yaml | \
@@ -22,4 +22,4 @@ tanzu tmc iam role list -o yaml | \
   yq eval -P -  > "$DATA_DIR/roles.yaml"
 
 relative_path="${DATA_DIR#*migration-scripts/}"
-echo "Exported Customized Roles from TMC SaaS: $relative_path/*.yaml"
+echo "Exported Customized Roles from source TMC SM: $relative_path/*.yaml"

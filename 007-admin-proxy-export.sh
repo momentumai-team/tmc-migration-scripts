@@ -10,7 +10,7 @@ fi
 mkdir -p $DATA_DIR
 
 echo "************************************************************************"
-echo "* Exporting Proxy from TMC SaaS ..."
+echo "* Exporting Proxy from source TMC SM ..."
 echo "************************************************************************"
 
 tanzu tmc account credential list -o yaml | \
@@ -20,4 +20,4 @@ tanzu tmc account credential list -o yaml | \
   yq eval -P -  > "$DATA_DIR/proxies.yaml"
 
 relative_path="${DATA_DIR#*migration-scripts/}"
-echo "Exported Proxy from TMC SaaS: $relative_path/*.yaml"
+echo "Exported Proxy from source TMC SM: $relative_path/*.yaml"

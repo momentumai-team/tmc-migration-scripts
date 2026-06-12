@@ -5,7 +5,7 @@ source utils/log.sh
 register_last_words "Export policy templates"
 
 log "************************************************************************"
-log "* Exporting Policy Templates from TMC SaaS ..."
+log "* Exporting Policy Templates from source TMC SM ..."
 log "************************************************************************"
 
 DATA_DIR="data"

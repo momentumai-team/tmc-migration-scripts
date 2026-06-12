@@ -11,10 +11,10 @@ fi
 mkdir -p $DATA_DIR
 
 echo "************************************************************************"
-echo "* Exporting Credentials from TMC SaaS ..."
+echo "* Exporting Credentials from source TMC SM ..."
 echo "************************************************************************"
 
 tanzu tmc account credential list -o yaml > "$DATA_DIR/credentials.yaml"
 
 relative_path="${DATA_DIR#*migration-scripts/}"
-echo "Exported Credentials from TMC SaaS: $relative_path/*.yaml"
+echo "Exported Credentials from source TMC SM: $relative_path/*.yaml"

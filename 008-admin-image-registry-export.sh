@@ -10,7 +10,7 @@ fi
 mkdir -p $DATA_DIR
 
 echo "************************************************************************"
-echo "* Exporting Image Registry from TMC SaaS ..."
+echo "* Exporting Image Registry from source TMC SM ..."
 echo "************************************************************************"
 
 tanzu tmc account credential list -o yaml | \
@@ -20,4 +20,4 @@ tanzu tmc account credential list -o yaml | \
   yq eval -P -  > "$DATA_DIR/image-registries.yaml"
 
 relative_path="${DATA_DIR#*migration-scripts/}"
-echo "Exported Image Registry from TMC SaaS: $relative_path/*.yaml"
+echo "Exported Image Registry from source TMC SM: $relative_path/*.yaml"

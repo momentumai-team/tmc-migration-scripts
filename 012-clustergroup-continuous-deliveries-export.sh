@@ -3,7 +3,7 @@ set -eE -o pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 source $SCRIPT_DIR/utils/common.sh
-source $SCRIPT_DIR/utils/saas-api-call.sh
+source $SCRIPT_DIR/utils/sm-api-call.sh
 
 init "[012] Export the cluster group continuous deliveries" "true"
 

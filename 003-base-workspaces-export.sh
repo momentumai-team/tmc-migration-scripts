@@ -11,10 +11,10 @@ fi
 mkdir -p $DATA_DIR
 
 echo "************************************************************************"
-echo "* Exporting Workspaces from TMC SaaS ..."
+echo "* Exporting Workspaces from source TMC SM ..."
 echo "************************************************************************"
 
 tanzu tmc workspace list -o yaml > "$DATA_DIR/workspaces.yaml"
 
 relative_path="${DATA_DIR#*migration-scripts/}"
-echo "Exported Workspaces from TMC SaaS: $relative_path/*.yaml"
+echo "Exported Workspaces from source TMC SM: $relative_path/*.yaml"

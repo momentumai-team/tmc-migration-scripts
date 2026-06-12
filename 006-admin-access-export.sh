@@ -9,10 +9,10 @@ if [ -d $DATA_DIR ]; then
 fi
 
 mkdir -p $DATA_DIR
-source "$SCRIPT_DIR"/utils/saas-api-call.sh
+source "$SCRIPT_DIR"/utils/sm-api-call.sh
 
 echo "************************************************************************"
-echo "* Exporting Admin Access from TMC SaaS ..."
+echo "* Exporting Admin Access from source TMC SM ..."
 echo "************************************************************************"
 
 # No longer to support AZURE_AKS and AWS_EKS
@@ -28,4 +28,4 @@ while IFS= read -r credential; do
 done  <<< "$credentialList"
 
 relative_path="${DATA_DIR#*migration-scripts/}"
-echo "Exported Admin Access from TMC SaaS: $relative_path/*.yaml"
+echo "Exported Admin Access from source TMC SM: $relative_path/*.yaml"
