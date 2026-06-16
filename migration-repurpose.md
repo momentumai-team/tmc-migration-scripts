@@ -76,6 +76,7 @@ What is still TODO (in order of how blocking they are for an end-to-end run):
 3. **`032-base-attached_clusters-*` still uses only `CLUSTER_NAME_FILTER`.** Attached clusters are a separate offboarding path; align with `TMC_WC_FILTER` later if/when attached clusters move through this fork.
 4. **`048-base-managed_clusters-onboard.sh` does not yet honor `TMC_WC_FILTER`** for the workload-cluster loop. Per the per-cluster runbook below, onboard needs the same narrowing so per-cluster runs only onboard the single target WC.
 5. **The previously-committed `TANZU_API_TOKEN` in the old notebook remains in git history.** Replacement in the working tree only prevents future leaks, not past ones — revoke at the CSP console if not already done.
+6. **Source-side cluster-scoped CD cleanup is not scripted.** `031`-offboard `unmanage`s the WC but leaves kustomizations, git repositories, repository secrets, and the CD-enable record as orphans on the source. Today these are deleted manually per WC — procedure, CLI quirks, and ordering against MC deregister captured in [Source-side cleanup (manual today)](#source-side-cleanup-manual-today). Promote to a script if/when the manual cycle starts costing real time across multiple WCs.
 
 ## Fork-specific goal: non-prod only, one cluster at a time
 
@@ -136,7 +137,8 @@ This is the end-state the fork should support, not what works today:
 5. Run `048` (workload-cluster loop only) — manage that single WC under the already-registered destination MC.
 6. Run `049-base-whole_clusters-check_readiness.sh` — confirm the WC is healthy in the destination.
 7. Run `050`–`058`, `061`-cluster, `063`-cluster, `064` — import per-cluster resources for that WC only.
-8. Verify the workload on the cluster. Stop. Operator chooses when to start the next cluster.
+8. Verify the workload on the cluster.
+9. **Manual source-side cleanup** for that WC — delete orphan kustomizations, git repositories, repository secrets, and `continuousdelivery disable` on the source. See [Source-side cleanup (manual today)](#source-side-cleanup-manual-today). Must run before the final MC deregister, while the source MC is still registered. Stop. Operator chooses when to start the next cluster.
 
 **Final cleanup (once all non-prod WCs are migrated):**
 
@@ -214,6 +216,27 @@ This inventory is what tells you, after Phase B, whether anything actually chang
 - **Consider disabling TMC CD on CD-enabled Phase A clusters across the Phase B window**, then re-enabling after. Brief CD outage; in return, TMC owns Flux lifecycle on those clusters again (CRDs reinstalled by TMC after re-enable) and Phase B can't break the CD path. Note that disable does not remove `tanzu-fluxcd-packageinstalls` resources cleanly — per [KB 375864](https://knowledge.broadcom.com/external/article/375864/how-to-remove-the-flux-cd-package-after.html), expect to clean up orphan package installs manually.
 - **If both `fluxcd2` and TMC CD remain co-resident across Phase B**, treat the *first* CD reconciliation after Phase B as the canary — a forced `flux reconcile kustomization ...` against a known-good GitRepository on a Phase A cluster, with controller logs tailed. If it fails with `failed to get API group resources`, halt Phase C and disable/re-enable CD on the affected clusters before continuing.
 - **Update Phase B verification** to include the explicit Flux checks already listed under Phase B above. They aren't optional — they are the only check that distinguishes "TMC SM upgraded cleanly" from "Phase B silently moved Flux out from under CD."
+
+## Source-side cleanup (manual today)
+
+`031`-offboard `unmanage`s a workload cluster from the source MC but does **not** delete the cluster-scoped TMC records that hung off it: kustomizations, git repositories, repository secrets, and the CD-enable record itself. Those linger as orphans on the source after the WC is gone. There is no script for this in the fork today; the original POC also had no delete-from-source step (it assumed "export only, leave SaaS as-is").
+
+**Per-WC manual procedure** — order matters, each step depends on the previous:
+
+```bash
+tanzu tmc continuousdelivery ks delete <KS_NAME> -s cluster -m <MGMT> -p <PROV> -c <WC>
+tanzu tmc continuousdelivery gitrepository delete <REPO_NAME> -s cluster -m <MGMT> -p <PROV> -c <WC>
+tanzu tmc continuousdelivery repositorysecret delete <SECRET_NAME> -s cluster -m <MGMT> -p <PROV> --cluster-name <WC>
+tanzu tmc continuousdelivery disable -s cluster -m <MGMT> -p <PROV> -c <WC>
+```
+
+**CLI quirks worth knowing:**
+
+- The `delete` commands fail with an unhelpful generic error if `-m` or `-p` is omitted. Both are de facto required for cluster-scoped CD operations even though the CLI does not surface them as such.
+- `repositorysecret` uses `--cluster-name` where every other CD subcommand uses `-c`.
+- Repository secrets do not appear under `tanzu tmc secret list`. They are created implicitly with the git repository and live under the CD subtree, so deleting the git repository does not cascade them — they must be deleted explicitly.
+
+**Where this fits relative to MC deregister.** The supervisor (VKS) acting as the MC can only be registered to one TMC instance at a time. The per-WC cleanup above must run while the source MC is still registered (otherwise `-m <source-MC>` resolves to nothing). The ordering is: per-WC export → per-WC unmanage from source → per-WC source-side CD cleanup → repeat for each WC → finally deregister the empty source MC (`TMC_DEREGISTER_MC=true`). Destination-side onboarding can interleave with the source-side drain *if and only if* the destination MC is a different supervisor than the source's. If the same VKS supervisor is being handed over, all source-side per-WC work — including this cleanup — must finish first, because the destination MC registration step (`048` preparation) is blocked while the source still holds the supervisor.
 
 ## What not to do
 
