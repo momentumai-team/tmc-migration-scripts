@@ -3,7 +3,7 @@
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 DATA_DIR="$SCRIPT_DIR"/data/setting
-scopes=("cluster" "clustergroup" "organization")
+scopes=("cluster" "clustergroup")
 
 if [ -d $DATA_DIR ]; then
   rm -rf $DATA_DIR/*
