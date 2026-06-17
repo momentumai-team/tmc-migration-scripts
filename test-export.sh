@@ -3,6 +3,33 @@
 # Notebook for TMC SM source → SM destination migration
 ## This notebook walks through a single migration run from a TMC Self-Managed source stack to a TMC Self-Managed destination stack. Replace every placeholder (<...>) with values for your environment before running.
 
+# -----------------------------------------------------------------------------
+# Usage:
+#   ./test-export.sh <username> <password> <dns> <mc_filter> <wc_filter> <cg_filter>
+#
+# Example:
+#   ./test-export.sh admin 'p@ss' tmc.source.example.com '*' '*' '*'
+#
+# Positional arguments (mapped to env vars consumed by the export scripts):
+#   $1  TMC_SOURCE_USERNAME       Username for the source TMC SM stack.
+#   $2  TMC_SOURCE_PASSWORD       Password for the source TMC SM stack (not echoed).
+#   $3  TMC_SOURCE_DNS            DNS hostname of the source TMC SM stack
+#                                 (e.g. tmc.source.example.com).
+#   $4  TMC_MC_FILTER             Management-cluster name filter; limits which
+#                                 management clusters are exported.
+#   $5  TMC_WC_FILTER             Workload-cluster name filter; limits which
+#                                 workload clusters (and their add-on/DP
+#                                 resources) are exported.
+#   $6  TMC_CG_FILTER             Cluster-group name filter; limits which
+#                                 cluster groups (and their add-on resources)
+#                                 are exported.
+#
+# Additional env vars set below:
+#   TMC_SOURCE_IDP_MFA_ENABLED    Defaults to false. Set true (or uncomment the
+#                                 override further down) if the source IDP
+#                                 requires MFA during login.
+# -----------------------------------------------------------------------------
+
 uname -a
 echo "PWD=$PWD"
 

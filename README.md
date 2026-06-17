@@ -2,6 +2,39 @@
 
 This repo holds bash scripts and a Jupyter notebook for migrating from a **TMC Self-Managed (SM) source** stack to a **TMC SM destination** stack. It is a fork of the [vmware-samples/tmc-migration-scripts](https://github.com/vmware-samples/tmc-migration-scripts) POC (originally TMC SaaS → SM); see [`migration-repurpose.md`](./migration-repurpose.md) for the rationale, fork-specific goals (non-prod-only, one cluster at a time), and the running change log.
 
+## Testing the Export
+
+Given that the migration process involves moving cluster management from a source to target TMC,
+there is some risk to make sure the target ends up in the same state as the source.
+
+For this reason the steps are separated into separate scripts,
+and covered individually in the notebook.
+
+Scripts 1->30 involve exporting TMC management data, and are non-destructive to the source TMC instance.
+
+An example script is provided at `test-export.sh`.
+
+Usage:
+
+```bash
+./test-export.sh <tmc api access username> <tmc api access password> <fqdn of tmc instance> \
+     <management cluster filter> \
+     <workload cluster filter> \
+     <cluster group filter>
+```
+
+Example:
+
+```bash
+./test-export.sh admin '<tmc admin password>' tmc.lab1.mmtm.ai 'supervisor' 'dev1' 'dev'
+```
+
+where the name of the filtered management cluster is `supervisor`,
+the name of the cluster group is `dev`,
+and the name of the cluster is `dev1`.
+
+You can also add multiple values for the filters via comma separation.
+
 ## Script Index
 
 | Script                                                                                                   | Description                                                  | Status | Notes                                                                                                                                                      |
@@ -386,9 +419,9 @@ Operation includes:
     Then run script [048-base-managed_clusters-ensure-cleanup.sh](./048-base-managed_clusters-ensure-cleanup.sh) to check and ensure the stale source-TMC annotations and agents on clusters get removed.
 
     Then run script [048-base-managed\_clusters-onboard.sh](./048-base-managed_clusters-onboard.sh) to onboard the exported clusters onto SM.
-    
+
     By default, clusters are onboarded sequentially. Set the CLUSTERS_ONBOARD_BATCH_SIZE environment variable to control the parallel batch size.
-    By default, the timeout of onboarding a cluster is 10 min, set the CLUSTER_ONBOARD_TIMEOUT environment variable if the cluster has many nodes, it also depends on the performance of customer's environment, e.g approximate 3 min per node 
+    By default, the timeout of onboarding a cluster is 10 min, set the CLUSTER_ONBOARD_TIMEOUT environment variable if the cluster has many nodes, it also depends on the performance of customer's environment, e.g approximate 3 min per node
 
 13. Run script [049-base-attached\_clusters-input\_from_user.sh](./049-base-attached_clusters-input_from_user.sh) to generate a Kubeconfig index file for the attached clusters. Replace the path placeholders `/path/to/the/real/wc_kubeconfig/file` in the generated Kubeconfig index file.
 
