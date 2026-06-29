@@ -159,11 +159,13 @@ Operation includes:
     export TMC_CG_FILTER="cg1,cg2"
 
     # Management-cluster filter — honored by 031-export, utils/offboard-clusters.sh
-    # (and transitively 019/020/022).
+    # (and transitively 019/022).
     export TMC_MC_FILTER="my_mc_1,my_mc_2"
 
-    # Workload-cluster filter — honored by 031-export, utils/offboard-clusters.sh,
-    # 031-offboard (unmanage loop), and 028/030 (their direct cluster list calls).
+    # Workload-cluster filter — honored by 031-export, 031-offboard (unmanage loop),
+    # utils/offboard-clusters.sh (transitively 019/022), the cluster export scripts
+    # 020/021/023–027 (inline on their cluster list calls; 027 also skips
+    # non-matching clusters in its per-cluster data-protection loop), and 028/030.
     export TMC_WC_FILTER="wc_cluster_1,wc_cluster_2"
     ```
 

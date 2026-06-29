@@ -3,6 +3,15 @@
 set +e
 
 source utils/sm-api-call.sh
+source utils/filter.sh
+
+# TMC_WC_FILTER narrows the cluster-scoped data-protection resources to a
+# subset of workload-cluster names. FILTER is a yq map() body for the
+# cluster-scoped list files; WC_PATTERN is the raw regex used to skip
+# non-matching clusters in the per-cluster dataprotection loop. Both are
+# no-ops (passthrough / empty) when TMC_WC_FILTER is unset.
+FILTER=$(yq_filter_or_passthrough '.fullName.clusterName' "$TMC_WC_FILTER")
+WC_PATTERN=$(build_filter_pattern "$TMC_WC_FILTER")
 
 DPDIR=data/data-protection
 rm -fr ${DPDIR}
@@ -18,11 +27,13 @@ while read -r name; do
     i=$((i+1))
 done < <(yq -r '.backupLocations[] | .fullName.name' ${DPDIR}/backup_location_org.yaml)
 
-tanzu tmc data-protection backup-location list -o yaml -s cluster > ${DPDIR}/backup_location_cluster.yaml
+tanzu tmc data-protection backup-location list -o yaml -s cluster | \
+    yq ".backupLocations |= map($FILTER) | .totalCount = (.backupLocations | length)" > ${DPDIR}/backup_location_cluster.yaml
 
 # Save schedule
 echo "Saving schedule for clusters ......"
-tanzu tmc data-protection schedule list -s cluster -o yaml > ${DPDIR}/schedule-cluster.yaml
+tanzu tmc data-protection schedule list -s cluster -o yaml | \
+    yq ".schedules |= map($FILTER) | .totalCount = (.schedules | length)" > ${DPDIR}/schedule-cluster.yaml
 echo "Saving schedule for clustergroups ......"
 yq -r '.backupLocations[] | .spec.assignedGroups[] | select(.clustergroup) | .clustergroup.name' ${DPDIR}/backup_location_org.yaml | while read -r groupname; do
     echo "    clustergroup: ${groupname}"
@@ -70,6 +81,10 @@ done
 echo "Saving dataprotection for clusters ......"
 #yq -r '.backupLocations[] | .fullName | .managementClusterName + " " + .provisionerName + " " + .clusterName' ${DPDIR}/backup_location_cluster.yaml | while read -r mgmtname provname clname; do
 yq -r '.backupLocations[] | .spec.assignedGroups[] | select(.cluster) | .cluster.managementClusterName + " " + .cluster.provisionerName + " " + .cluster.name' ${DPDIR}/backup_location_org.yaml | while read -r mgmtname provname clname; do
+    # Skip clusters outside TMC_WC_FILTER (empty pattern == match all)
+    if [[ -n "${WC_PATTERN}" ]] && ! [[ "${clname}" =~ ^(${WC_PATTERN})$ ]]; then
+        continue
+    fi
     echo "    cluster: ${clname}"
     dpcl=$(curl_api_call v1alpha1/clusters/${clname}/dataprotection\?fullName.managementClusterName=${mgmtname}\&fullName.provisionerName=${provname})
     if [[ "${dpcl}" != "{}" ]]; then
