@@ -5,10 +5,10 @@
 
 # -----------------------------------------------------------------------------
 # Usage:
-#   ./test-export.sh <username> <password> <dns> <mc_filter> <wc_filter> <cg_filter>
+#   ./100-export.sh <username> <password> <dns> <mc_filter> <wc_filter> <cg_filter>
 #
 # Example:
-#   ./test-export.sh admin 'p@ss' tmc.source.example.com '*' '*' '*'
+#   ./100-export.sh admin 'p@ss' tmc.source.example.com '*' '*' '*'
 #
 # Positional arguments (mapped to env vars consumed by the export scripts):
 #   $1  TMC_SOURCE_USERNAME       Username for the source TMC SM stack.
@@ -175,3 +175,7 @@ tanzu config eula accept
 ## ES-30: Export Policy Assignments
 
 ./030-base-policy-assignments-export.sh
+
+## ES-31: Export managed clusters (DO NOT OFFBOARD YET!)
+
+./031-base-managed_clusters-export.sh

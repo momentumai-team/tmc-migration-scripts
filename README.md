@@ -12,12 +12,12 @@ and covered individually in the notebook.
 
 Scripts 1->30 involve exporting TMC management data, and are non-destructive to the source TMC instance.
 
-An example script is provided at `test-export.sh`.
+An example script is provided at `100-export.sh`.
 
 Usage:
 
 ```bash
-./test-export.sh <tmc api access username> <tmc api access password> <fqdn of tmc instance> \
+./100-export.sh <tmc api access username> <tmc api access password> <fqdn of tmc instance> \
      <management cluster filter> \
      <workload cluster filter> \
      <cluster group filter>
@@ -26,7 +26,7 @@ Usage:
 Example:
 
 ```bash
-./test-export.sh admin '<tmc admin password>' tmc.lab1.mmtm.ai 'supervisor' 'dev1' 'dev'
+./100-export.sh admin '<tmc admin password>' tmc.lab1.mmtm.ai 'supervisor' 'dev1' 'dev'
 ```
 
 where the name of the filtered management cluster is `supervisor`,
