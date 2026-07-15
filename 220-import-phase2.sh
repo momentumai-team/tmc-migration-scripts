@@ -24,6 +24,14 @@
 uname -a
 echo "PWD=$PWD"
 
+# Usage check: ensure all required arguments are provided.
+if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
+  echo "ERROR: missing required arguments." >&2
+  echo "Usage:   $0 <username> <password> <dns>" >&2
+  echo "Example: $0 admin 'p@ss' tmc.destination.example.com" >&2
+  exit 1
+fi
+
 echo "Environment variables needed:"
 echo "TMC_SOURCE_USERNAME=$TMC_SOURCE_USERNAME"
 echo "TMC_SOURCE_DNS=$TMC_SOURCE_DNS"

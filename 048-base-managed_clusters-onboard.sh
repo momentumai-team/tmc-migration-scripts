@@ -319,19 +319,79 @@ onboard_workload_cluster() {
   if ! eval "$cmd"; then
     log error "❌ Failed to manage $name, please re-run this script later (required)"
     return 1
-  else
-    if wait_cluster_ready "$mgmt" "$prov" "$name"; then
-      onboarded_cluster_name="$mgmt.$prov.$name"
-      if ! grep -qxF "$onboarded_cluster_name" "$ONBOARDED_CLUSTER_INDEX_FILE"; then
-        # If it doesn't exist, append it
-        echo "$onboarded_cluster_name" >>"$ONBOARDED_CLUSTER_INDEX_FILE"
-      fi
-      return 0
-    else
-      log error "❌ Cluster $name is not ready, please double check it in the TMC-SM and ensure it's ready and then re-run this script again (required)"
-      return 1
-    fi
   fi
+
+  # Record the managed cluster immediately so the final readiness check (049)
+  # covers it even if it is not READY yet.
+  local onboarded_cluster_name="$mgmt.$prov.$name"
+  if ! grep -qxF "$onboarded_cluster_name" "$ONBOARDED_CLUSTER_INDEX_FILE"; then
+    echo "$onboarded_cluster_name" >>"$ONBOARDED_CLUSTER_INDEX_FILE"
+  fi
+
+  # Wait for readiness (best-effort). Return non-zero on timeout so the caller
+  # can pause for investigation; the cluster stays recorded regardless.
+  if wait_cluster_ready "$mgmt" "$prov" "$name"; then
+    return 0
+  else
+    log error "❌ Cluster $name is not READY yet (managed and recorded; see pause below)"
+    return 1
+  fi
+}
+
+# Pause after a batch when one or more clusters are managed but not READY yet.
+# The clusters are already recorded in $ONBOARDED_CLUSTER_INDEX_FILE, so the final
+# readiness check (049) will verify them regardless of the choice made here.
+function handle_not_ready_clusters() {
+  local clusters=("$@")
+  local choice c m p n
+
+  while true; do
+    log warn "⚠️  ${#clusters[@]} managed cluster(s) are not READY yet:"
+    for c in "${clusters[@]}"; do
+      log warn "    - $c  (management.provisioner.cluster)"
+    done
+
+    # Don't block automation when there is no interactive terminal.
+    if [[ ! -t 0 ]]; then
+      log warn "No interactive terminal detected; continuing. The final readiness check (049) will verify these clusters."
+      return 0
+    fi
+
+    echo "" >&2
+    echo "Investigate the cluster(s) in TMC-SM, then choose an action:" >&2
+    echo "  [Enter] re-check readiness now   [c] continue   [q] quit" >&2
+    read -r choice
+
+    case "$choice" in
+      ""|r|R)
+        local still_not_ready=()
+        for c in "${clusters[@]}"; do
+          IFS='.' read -r m p n <<< "$c"
+          if is_cluster_ready "$m" "$p" "$n"; then
+            log info "✅ Cluster $n is now READY"
+          else
+            still_not_ready+=("$c")
+          fi
+        done
+        if [[ ${#still_not_ready[@]} -eq 0 ]]; then
+          log info "All previously not-ready clusters are now READY"
+          return 0
+        fi
+        clusters=("${still_not_ready[@]}")
+        ;;
+      c|C)
+        log warn "Continuing. Not-ready clusters remain recorded; the final readiness check (049) will verify them."
+        return 0
+        ;;
+      q|Q)
+        log error "Aborting onboarding at user request."
+        exit 1
+        ;;
+      *)
+        echo "Unrecognized choice: '$choice'" >&2
+        ;;
+    esac
+  done
 }
 
 function onboard_workload_clusters () {
@@ -365,21 +425,27 @@ function onboard_workload_clusters () {
       
       log info "Processing batch $batch_num: clusters $((start + 1))-$((end + 1)) of $cluster_count"
       local pids=()
+      local pid_names=()
       for ((i=start; i<=end; i++)); do
         # Start the cluster processing in background
         onboard_workload_cluster "$wc_file" "$i" &
         pids+=($!)
+        pid_names+=("$(yq eval ".clusters[$i].fullName.managementClusterName" "$wc_file").$(yq eval ".clusters[$i].fullName.provisionerName" "$wc_file").$(yq eval ".clusters[$i].fullName.name" "$wc_file")")
       done
-      
-      local failed_jobs=0
+
+      local failed_clusters=()
+      local pi=0
       for pid in "${pids[@]}"; do
         if ! wait "$pid"; then
-          failed_jobs=$((failed_jobs + 1))
+          failed_clusters+=("${pid_names[$pi]}")
         fi
+        pi=$((pi + 1))
       done
-      
-      if [[ $failed_jobs -gt 0 ]]; then
-        log warn "Batch $batch_num completed with $failed_jobs failed jobs out of $((end - start + 1)) total jobs"
+
+      if [[ ${#failed_clusters[@]} -gt 0 ]]; then
+        log warn "Batch $batch_num completed with ${#failed_clusters[@]} not-ready cluster(s) out of $((end - start + 1))"
+        # Pause for investigation; clusters are already recorded for the final check.
+        handle_not_ready_clusters "${failed_clusters[@]}"
       else
         log info "Batch $batch_num completed successfully"
       fi

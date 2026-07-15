@@ -33,6 +33,14 @@
 uname -a
 echo "PWD=$PWD"
 
+# Usage check: ensure all required arguments are provided.
+if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ] || [ -z "$5" ] || [ -z "$6" ]; then
+  echo "ERROR: missing required arguments." >&2
+  echo "Usage:   $0 <username> <password> <dns> <mc_filter> <wc_filter> <cg_filter>" >&2
+  echo "Example: $0 admin 'p@ss' tmc.source.example.com '*' '*' '*'" >&2
+  exit 1
+fi
+
 export TMC_SOURCE_USERNAME="$1"
 export TMC_SOURCE_PASSWORD="$2"
 export TMC_SOURCE_DNS="$3"
