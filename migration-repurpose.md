@@ -44,6 +44,7 @@ Re-run scripts after fixing inputs — most are idempotent on the SM side (skip-
   - `TMC_CG_FILTER` *(new in this fork)* — comma-separated cluster-group names. Honored by `002` (filters the exported CG list) and inline by `010`–`017` (filters per-CG resource lists). Whitespace around names is tolerated.
   - `TMC_WC_FILTER` *(new in this fork)* — comma-separated workload-cluster names. Honored by `031-export` (filters `wc_of_<mc>.yaml`), `utils/offboard-clusters.sh` (filters the managed-WC TSV), `031-offboard` (filters the unmanage loop, refuses MC deregister when set), and `028`/`030` (filters the direct `tanzu tmc cluster list` calls that don't read the already-filtered files).
   - `TMC_DEREGISTER_MC` *(new in this fork)* — must be set to `true` to allow `031-offboard` to deregister the management cluster. Default behavior is "unmanage workload clusters only." Combined with the completeness check below, this enforces "every WC under the supervisor MC has been exported before the MC itself is deregistered."
+  - `TMC_CLEANUP_SOURCE` *(new in this fork)* — must be set to `true` to let the source-side cleanup scripts (`070`, `071`) actually delete. Default behavior is a **dry run** that prints the exact deletes it would issue and changes nothing. `070` additionally requires `TMC_WC_FILTER`; `071` additionally requires `TMC_CG_FILTER` — neither will run unfiltered. See [Source-side cleanup](#source-side-cleanup).
   - All filters are independent axes, AND-combined. The yq/regex pattern they expand into is whole-name (`^(a|b|c)$`), so partial matches don't surprise.
   - Helper: `utils/filter.sh` exposes `build_filter_pattern` and `yq_filter_or_passthrough` so call sites compose a yq pipeline without conditional branches — `yq ".clusters[] | $FILTER"` works whether the filter is set or empty.
 
@@ -76,7 +77,7 @@ What is still TODO (in order of how blocking they are for an end-to-end run):
 3. **`032-base-attached_clusters-*` still uses only `CLUSTER_NAME_FILTER`.** Attached clusters are a separate offboarding path; align with `TMC_WC_FILTER` later if/when attached clusters move through this fork.
 4. **`048-base-managed_clusters-onboard.sh` does not yet honor `TMC_WC_FILTER`** for the workload-cluster loop. Per the per-cluster runbook below, onboard needs the same narrowing so per-cluster runs only onboard the single target WC.
 5. **The previously-committed `TANZU_API_TOKEN` in the old notebook remains in git history.** Replacement in the working tree only prevents future leaks, not past ones — revoke at the CSP console if not already done.
-6. **Source-side cluster-scoped CD cleanup is not scripted.** `031`-offboard `unmanage`s the WC but leaves kustomizations, git repositories, repository secrets, and the CD-enable record as orphans on the source. Today these are deleted manually per WC — procedure, CLI quirks, and ordering against MC deregister captured in [Source-side cleanup (manual today)](#source-side-cleanup-manual-today). Promote to a script if/when the manual cycle starts costing real time across multiple WCs.
+6. ~~**Source-side cluster-scoped CD cleanup is not scripted.**~~ **RESOLVED.** `031`-offboard `unmanage`s the WC but leaves kustomizations, git repositories, repository secrets, and the CD-enable record as orphans on the source. These are now deleted by [`070-cluster-source-cleanup.sh`](./070-cluster-source-cleanup.sh) (per-WC) and the cluster-group teardown by [`071-clustergroup-source-cleanup.sh`](./071-clustergroup-source-cleanup.sh) (final). Both default to a dry run and are gated on `TMC_CLEANUP_SOURCE=true`. Procedure, CLI quirks, ordering against MC deregister, and the shared-resource safety model are in [Source-side cleanup](#source-side-cleanup). Motivation for scripting it: unlike the upstream SaaS→SM POC, the source here is a **surviving production instance**, so the migrated objects it still holds must be reclaimed rather than left to be swept away on account termination.
 
 ## Fork-specific goal: non-prod only, one cluster at a time
 
@@ -138,12 +139,12 @@ This is the end-state the fork should support, not what works today:
 6. Run `049-base-whole_clusters-check_readiness.sh` — confirm the WC is healthy in the destination.
 7. Run `050`–`058`, `061`-cluster, `063`-cluster, `064` — import per-cluster resources for that WC only.
 8. Verify the workload on the cluster.
-9. **Manual source-side cleanup** for that WC — delete orphan kustomizations, git repositories, repository secrets, and `continuousdelivery disable` on the source. See [Source-side cleanup (manual today)](#source-side-cleanup-manual-today). Must run before the final MC deregister, while the source MC is still registered. Stop. Operator chooses when to start the next cluster.
+9. **Source-side cleanup** for that WC — run `070-cluster-source-cleanup.sh` with `TMC_WC_FILTER=<wc_name>` (dry run first, then `TMC_CLEANUP_SOURCE=true`) to delete the orphan kustomizations, git repositories, repository secrets, and the CD-enable record on the source. See [Source-side cleanup](#source-side-cleanup). Must run before the final MC deregister, while the source MC is still registered. Stop. Operator chooses when to start the next cluster.
 
 **Final cleanup (once all non-prod WCs are migrated):**
 
 1. Run `031` with `TMC_DEREGISTER_MC=true` — deregister the empty non-prod MC from the source.
-2. Optionally delete the non-prod cluster groups from the source.
+2. Run `071-clustergroup-source-cleanup.sh` with `TMC_CG_FILTER=<cg>` (dry run first, then `TMC_CLEANUP_SOURCE=true`) — tear down the non-prod cluster group(s) and their group-scoped CD/secret records on the source. It refuses any group that still has live member clusters (fail-closed), so run it after the WCs are drained and the MC is deregistered.
 
 ## Sequencing the destination 1.4.4 upgrade
 
@@ -217,11 +218,27 @@ This inventory is what tells you, after Phase B, whether anything actually chang
 - **If both `fluxcd2` and TMC CD remain co-resident across Phase B**, treat the *first* CD reconciliation after Phase B as the canary — a forced `flux reconcile kustomization ...` against a known-good GitRepository on a Phase A cluster, with controller logs tailed. If it fails with `failed to get API group resources`, halt Phase C and disable/re-enable CD on the affected clusters before continuing.
 - **Update Phase B verification** to include the explicit Flux checks already listed under Phase B above. They aren't optional — they are the only check that distinguishes "TMC SM upgraded cleanly" from "Phase B silently moved Flux out from under CD."
 
-## Source-side cleanup (manual today)
+## Source-side cleanup
 
-`031`-offboard `unmanage`s a workload cluster from the source MC but does **not** delete the cluster-scoped TMC records that hung off it: kustomizations, git repositories, repository secrets, and the CD-enable record itself. Those linger as orphans on the source after the WC is gone. There is no script for this in the fork today; the original POC also had no delete-from-source step (it assumed "export only, leave SaaS as-is").
+**Why this exists at all.** The upstream SaaS→SM POC had no delete-from-source step: it assumed the SaaS org would be terminated, so whatever the migration left behind got swept away implicitly. This fork's source is a **surviving production TMC SM 1.4.2 instance** — prod keeps living on it. The non-prod objects the migration moved out (cluster-scoped CD records, cluster groups and their group-scoped resources) therefore have to be actively reclaimed, or they accumulate as orphans on a production control plane.
 
-**Per-WC manual procedure** — order matters, each step depends on the previous:
+`031`-offboard `unmanage`s a workload cluster from the source MC but does **not** delete the cluster-scoped TMC records that hung off it: kustomizations, git repositories, repository secrets, and the CD-enable record itself. Those linger after the WC is gone. Two scripts reclaim the source, in two tiers:
+
+- [`070-cluster-source-cleanup.sh`](./070-cluster-source-cleanup.sh) — **per-WC (Tier 1).** Deletes the orphan cluster-scoped CD records for the workload cluster(s) in `TMC_WC_FILTER`. Runbook step 9.
+- [`071-clustergroup-source-cleanup.sh`](./071-clustergroup-source-cleanup.sh) — **cluster-group teardown (Tier 2).** Deletes the group-scoped CD/secret records and the non-prod cluster group(s) in `TMC_CG_FILTER`. Final cleanup, after the MC is deregistered.
+
+Both source [`utils/source-cleanup.sh`](./utils/source-cleanup.sh) for the shared gate and guards. The recommended way to run them is the interactive wrapper [`300-source-cleanup.sh`](./300-source-cleanup.sh) `<username> <password> <dns> <mc_filter> <wc_filter> <cg_filter>`, which — like the other source-side orchestrators — establishes the `migration` context (via `001`) before running each phase as a dry-run preview and then requires the operator to **type the target name** to authorize the real delete (anything else skips the phase; a non-TTY stdin stays a dry run). You can run the wrapper at either point in the runbook and skip the phase that does not apply yet — Phase 071 refuses (fail-closed) while any WC is still live in the group, so previewing it early is harmless.
+
+**Cleanup is a strict subset of what was exported — not everything the pipeline copied.** The dangerous asymmetry versus the migration path: much of what was *exported* (workspaces, admin roles/credentials/proxy/registry/settings, org-scoped policy templates and assignments, org-scoped backup locations) is **org-wide and shared with prod**. Those were *copied* to the destination; they were never non-prod-exclusive in the source, so cleanup must never delete them — doing so breaks prod. `070`/`071` deliberately touch only cluster-scoped and cluster-group-scoped CD/secret objects, never org-wide admin resources.
+
+**Safety model (both scripts):**
+
+- **Dry run by default.** They print the exact deletes they would issue and change nothing. `TMC_CLEANUP_SOURCE=true` is required to apply — mirroring the `TMC_DEREGISTER_MC` gate on `031`.
+- **Targets come from the already-filtered `./data/` exports, never from a fresh live list.** A live list against a prod control plane is exactly how a prod object gets into a delete loop.
+- **Every target is re-checked against the active filter before it is touched.** `070` refuses without `TMC_WC_FILTER`; `071` refuses without `TMC_CG_FILTER`. A stale `data/` tree from a broader export cannot delete anything outside the current filter.
+- **Shared-resource verification (Tier 2).** Cluster-scoped records (Tier 1) belong to exactly one WC and never fan out, so there is nothing to share-check there. Group-scoped records fan out to *every* member of the group, so before `071` deletes a group or any group-scoped resource it queries the source live for clusters still in that group (`spec.clusterGroupName`) and **refuses** if any remain — a prod cluster sharing the group, or a non-prod WC not yet migrated. The query is **fail-closed**: if membership can't be enumerated, the group is refused rather than assumed empty. The `default` group is always refused.
+
+**Per-WC delete order** — matters, each step depends on the previous. This is what `070` issues (cluster scope) and what to run by hand if debugging:
 
 ```bash
 tanzu tmc continuousdelivery ks delete <KS_NAME> -s cluster -m <MGMT> -p <PROV> -c <WC>
@@ -232,9 +249,10 @@ tanzu tmc continuousdelivery disable -s cluster -m <MGMT> -p <PROV> -c <WC>
 
 **CLI quirks worth knowing:**
 
-- The `delete` commands fail with an unhelpful generic error if `-m` or `-p` is omitted. Both are de facto required for cluster-scoped CD operations even though the CLI does not surface them as such.
+- The cluster-scoped `delete` commands fail with an unhelpful generic error if `-m` or `-p` is omitted. Both are de facto required for cluster-scoped CD operations even though the CLI does not surface them as such.
 - `repositorysecret` uses `--cluster-name` where every other CD subcommand uses `-c`.
 - Repository secrets do not appear under `tanzu tmc secret list`. They are created implicitly with the git repository and live under the CD subtree, so deleting the git repository does not cascade them — they must be deleted explicitly.
+- The **group-scoped** delete flags `071` emits (`-s clustergroup -g <cg>` for CD subcommands; `-g`/`-n` for secrets) are inferred from the enable/create conventions in `042`–`047`, not battle-tested the way the cluster-scoped quirks above are. Run `071` as a dry run and eyeball the emitted commands before the first apply.
 
 **Where this fits relative to MC deregister.** The supervisor (VKS) acting as the MC can only be registered to one TMC instance at a time. The per-WC cleanup above must run while the source MC is still registered (otherwise `-m <source-MC>` resolves to nothing). The ordering is: per-WC export → per-WC unmanage from source → per-WC source-side CD cleanup → repeat for each WC → finally deregister the empty source MC (`TMC_DEREGISTER_MC=true`). Destination-side onboarding can interleave with the source-side drain *if and only if* the destination MC is a different supervisor than the source's. If the same VKS supervisor is being handed over, all source-side per-WC work — including this cleanup — must finish first, because the destination MC registration step (`048` preparation) is blocked while the source still holds the supervisor.
 

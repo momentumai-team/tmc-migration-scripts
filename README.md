@@ -111,6 +111,9 @@ You can also add multiple values for the filters via comma separation.
 | [063-base-policy-assignments-import.sh](./063-base-policy-assignments-import.sh)                         | Import policy assignments on organization/clustergroups/workspaces                                                             | READY |                                                                                                                                                            |
 | [063-cluster-policy-assignments-import.sh](./063-cluster-policy-assignments-import.sh)                   |  Import policy assignments on clusters                                                            | READY |                                                                                                                                                            |
 | [064-cluster-data\_protection-import.sh](./064-cluster-data_protection-import.sh)                        |  Import data protections                                     | READY  |                                                                                                                                                            |
+| [070-cluster-source-cleanup.sh](./070-cluster-source-cleanup.sh)                                         | Source-side cleanup (per WC): delete the orphan cluster-scoped CD records (kustomizations, git repositories, repository secrets, CD-enable) that `031`-offboard leaves on the **source** after a WC is unmanaged | READY | Runbook step 9, run while the source MC is still registered. Requires `TMC_WC_FILTER`. **Dry run by default** — set `TMC_CLEANUP_SOURCE=true` to delete. See migration-repurpose.md "Source-side cleanup". |
+| [071-clustergroup-source-cleanup.sh](./071-clustergroup-source-cleanup.sh)                               | Source-side cleanup (final): tear down the non-prod cluster group(s) and their group-scoped CD/secret records on the **source** | READY | Run after all non-prod WCs are drained and the MC is deregistered. Requires `TMC_CG_FILTER`. **Dry run by default**; `TMC_CLEANUP_SOURCE=true` to delete. **Refuses (fail-closed)** any group that still has live member clusters, so it can never delete a group shared with prod. |
+| [300-source-cleanup.sh](./300-source-cleanup.sh)                                                         | Interactive wrapper that runs 070 then 071 with a preview-then-confirm gate | READY | For each phase: previews the deletes as a dry run, then requires the operator to **type the target name** to authorize the real delete (anything else skips). Non-TTY stdin stays a dry run. Establishes the `migration` context first (via 001), like the other source-side orchestrators. Args: `<username> <password> <dns> <mc_filter> <wc_filter> <cg_filter>`. This is the recommended way to run the destructive source cleanup. |
 
 **Note:**
 Script file name follows pattern `<index>-<scope>-<resource>-<operation>.sh`.
@@ -135,6 +138,8 @@ Operation includes:
 * Offboard: unmanage the workload cluster and (optionally, when explicitly opted in) deregister the management cluster from the source TMC SM
 
 * Onboard: register the management cluster into the destination TMC SM and manage the workload clusters
+
+* Source-cleanup: reclaim the source TMC SM by deleting the migration objects it still holds after offboarding — the cluster-scoped CD orphans per WC (070) and the non-prod cluster group(s) and their group-scoped resources (071). Both dry-run by default (`TMC_CLEANUP_SOURCE=true` to apply), filter-scoped, and never touch org-wide resources shared with prod. This step is unique to this fork: the upstream SaaS→SM POC skipped source cleanup because the SaaS org was discarded, whereas here the source is a surviving production instance.
 
 ## Run the Scripts
 
@@ -502,6 +507,26 @@ Operation includes:
     export MEMBER_IDP_GROUP="tmc:member"
     ```
 21. Import resources `[Data protection]` 064. **Notes**: TBD to clarify the credentials depends on by DP should be imported in the previous steps.
+
+22. **Source-side cleanup (recommended: the interactive wrapper).** Reclaim the migration objects the offboarded clusters/groups left on the **source**. The wrapper [300-source-cleanup.sh](./300-source-cleanup.sh) runs both cleanup phases behind a preview-then-confirm gate — it dry-runs each phase, prints the deletes, and only applies the ones you authorize by typing the target name:
+
+    ```shell
+    ./300-source-cleanup.sh <username> <password> <dns> <mc_filter> <wc_filter> <cg_filter>
+    ```
+
+    Run it after each WC is healthy in the destination (confirm Phase 070, skip Phase 071 — it will refuse the group while the WC is still live), and again at the very end once every non-prod WC is drained and the MC is deregistered with `TMC_DEREGISTER_MC=true` (confirm Phase 071).
+
+    To run the phases directly instead (both **dry-run by default**; `TMC_CLEANUP_SOURCE=true` to apply):
+
+    ```shell
+    # Per-WC CD orphans — while the source MC is still registered:
+    TMC_MC_FILTER=<mc> TMC_WC_FILTER=<wc> ./070-cluster-source-cleanup.sh                     # dry run
+    TMC_MC_FILTER=<mc> TMC_WC_FILTER=<wc> TMC_CLEANUP_SOURCE=true ./070-cluster-source-cleanup.sh
+
+    # Cluster-group teardown — after the MC is deregistered (fail-closed on live members):
+    TMC_CG_FILTER=<cg> ./071-clustergroup-source-cleanup.sh                                   # dry run
+    TMC_CG_FILTER=<cg> TMC_CLEANUP_SOURCE=true ./071-clustergroup-source-cleanup.sh
+    ```
 
 ### Use jupyter notebook
 
