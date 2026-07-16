@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Notebook for TMC SM source → SM destination migration
-## This notebook walks through a single migration run from a TMC Self-Managed source stack to a TMC Self-Managed destination stack. Replace every placeholder (<...>) with values for your environment before running.
+# TMC SM source → SM destination migration
+# This script runs one phase of a single migration run from a TMC Self-Managed source stack to a TMC Self-Managed destination stack. Replace every placeholder (<...>) with values for your environment before running.
 
 # -----------------------------------------------------------------------------
 # Usage:

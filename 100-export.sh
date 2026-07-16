@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Notebook for TMC SM source → SM destination migration
-## This notebook walks through a single migration run from a TMC Self-Managed source stack to a TMC Self-Managed destination stack. Replace every placeholder (<...>) with values for your environment before running.
+# TMC SM source → SM destination migration
+# This script runs one phase of a single migration run from a TMC Self-Managed source stack to a TMC Self-Managed destination stack. Replace every placeholder (<...>) with values for your environment before running.
 
 # -----------------------------------------------------------------------------
 # Usage:
@@ -53,7 +53,7 @@ ls -l ./data
 # Connect to source TMC SM stack
 ## Set the source-side env vars and run ./001-base-source_stack-connect.sh to create the migration tanzu CLI context.
 
-### ⚠️ A previous version of this notebook committed a real TANZU_API_TOKEN. If that token has not already been revoked at the CSP console, revoke it now — it remains visible in git history.
+# ⚠️ A previous version of this repo (the old migration notebook) committed a real TANZU_API_TOKEN. If that token has not already been revoked at the CSP console, revoke it now — it remains visible in git history.
 
 export TMC_SOURCE_USERNAME="$1"
 export TMC_SOURCE_PASSWORD="$2"
