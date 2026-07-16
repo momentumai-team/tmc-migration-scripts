@@ -9,6 +9,10 @@ export IGNORE_TANZU_ERROR="AlreadyExists"
 init "[058] Import the cluster helm releases"
 
 find . -type f -name '*.yml' | while read -r file; do
+  if is_clustergroup_derived "$file"; then
+    log info "Skipping cluster-group-derived $(basename "$file"); managed at cluster-group scope"
+    continue
+  fi
   set +e
   check_onboarded_cluster_for_yaml $file
 

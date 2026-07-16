@@ -21,6 +21,11 @@
 #                                       requires MFA during login.
 # -----------------------------------------------------------------------------
 
+# Fail fast: any failing import step aborts the run so the operator can fix the
+# offending resource and re-run. The import sub-scripts are idempotent, so a
+# re-run has no side effects from a prior partial run.
+set -eE -o pipefail
+
 uname -a
 echo "PWD=$PWD"
 
@@ -100,13 +105,22 @@ cat << 'PROMPT'
   Put the encoded strings in the missing data fields:
     atomicSpec:
       data:
-        password: '<base64 from above>'
-        username: '<base64 from above>'
+        data:
+          password: '<base64 from above>'
+          username: '<base64 from above>'
   in the ./data/clustergroup-repository-credentials/*.yml, then press Enter to continue...
 PROMPT
 
 read
-./043-clustergroup-repository-credentials-import.sh
+### Abort before creating git repositories if the repository secrets fail to
+### import — a git repository bound to a missing/invalid secret would just error
+### with "authentication required". Fix the *.yml and re-run.
+if ! ./043-clustergroup-repository-credentials-import.sh; then
+  echo "ERROR: cluster group repository secret import failed." >&2
+  echo "  Fix ./data/clustergroup-repository-credentials/*.yml and re-run this script." >&2
+  echo "  Git repositories were NOT created (they depend on these secrets)." >&2
+  exit 1
+fi
 
 ## Import git repository resources of cluster groups
 ./044-clustergroup-git-repositories-import.sh

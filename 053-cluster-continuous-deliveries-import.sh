@@ -4,9 +4,16 @@ set -eE -o pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 source $SCRIPT_DIR/utils/common.sh
 
+# enable has no update verb; tolerate re-runs where CD is already enabled.
+export IGNORE_TANZU_ERROR="AlreadyExists"
+
 init "[053] Import the cluster continuous deliveries"
 
 find . -type f -name '*.yml' | while read -r file; do
+  if is_clustergroup_derived "$file"; then
+    log info "Skipping cluster-group-derived $(basename "$file"); managed at cluster-group scope"
+    continue
+  fi
   REASON=`yq '.status.conditions.Ready.reason' $file`
   if [ $REASON == "Enabled" ] || [ $REASON == "Enabling" ]; then
     set +e

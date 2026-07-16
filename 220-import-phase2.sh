@@ -21,6 +21,11 @@
 #                                       requires MFA during login.
 # -----------------------------------------------------------------------------
 
+# Fail fast: any failing import step aborts the run so the operator can fix the
+# offending resource and re-run. The import sub-scripts are idempotent, so a
+# re-run has no side effects from a prior partial run.
+set -eE -o pipefail
+
 uname -a
 echo "PWD=$PWD"
 
@@ -72,7 +77,17 @@ read -p "⚠️ MANUAL STEP: fill in the missing data fields in ./data/cluster-s
 ### The exported credential manifests are missing their data fields. Fill them in
 ### before importing, per credential type (USERNAME_PASSWORD / SSH / CACert).
 read -p "⚠️ MANUAL STEP: fill in the missing data fields in ./data/cluster-repository-credentials/*.yml, then press Enter to continue..."
-./054-cluster-repository-credentials-import.sh
+### Abort before creating git repositories if the repository secrets fail to
+### import — a git repository bound to a missing/invalid secret would just error
+### with "authentication required". Fix the *.yml and re-run.
+### (Cluster-group-derived secrets are skipped here; they are imported at the
+### cluster-group scope in phase 1 and propagated by TMC.)
+if ! ./054-cluster-repository-credentials-import.sh; then
+  echo "ERROR: cluster repository secret import failed." >&2
+  echo "  Fix ./data/cluster-repository-credentials/*.yml and re-run this script." >&2
+  echo "  Git repositories were NOT created (they depend on these secrets)." >&2
+  exit 1
+fi
 
 ## Import git repository resources to clusters
 ./055-cluster-git-repositories-import.sh

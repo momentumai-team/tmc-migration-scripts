@@ -66,6 +66,39 @@ check_onboarded_cluster_for_yaml () {
     return $?
 }
 
+is_clustergroup_derived () {
+    # Succeeds (0) when the exported resource is propagated from a cluster group
+    # (non-empty meta.annotations.cluster-group). Such resources are managed at
+    # the cluster-group scope; TMC propagates them to member clusters
+    # automatically, so they must NOT be re-imported at the cluster scope.
+    local file=$1
+    local cg
+    cg=$(command yq -r '.meta.annotations.cluster-group // ""' "$file")
+    [[ -n "$cg" && "$cg" != "null" ]]
+}
+
+cd_upsert () {
+    # Idempotent create-or-update for continuousdelivery subresources so a
+    # re-run re-applies a corrected manifest instead of skipping on
+    # AlreadyExists. Usage: <yaml on stdin> | cd_upsert <resource> <flags...>
+    #   e.g.  ... | cd_upsert repositorysecret -s clustergroup
+    local resource=$1; shift
+    local payload; payload=$(cat)
+    log debug "cd_upsert $resource create $*"
+    if printf '%s' "$payload" | command tanzu tmc continuousdelivery "$resource" create "$@" -f - &> tanzu-output.txt; then
+        rm -f tanzu-output.txt
+        return 0
+    fi
+    if grep -q "AlreadyExists" tanzu-output.txt; then
+        log debug "cd_upsert $resource exists; update $*"
+        printf '%s' "$payload" | command tanzu tmc continuousdelivery "$resource" update "$@" -f -
+        return $?
+    fi
+    cat tanzu-output.txt >&2
+    rm -f tanzu-output.txt
+    return 1
+}
+
 mark_success () {
     local owner=$1
     local action=$2
