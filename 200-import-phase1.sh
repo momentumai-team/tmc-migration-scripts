@@ -89,7 +89,23 @@ read -p "⚠️ MANUAL STEP: fill in the missing fields in the image-registry te
 ## Import fluxcd resources of cluster groups
 ./042-clustergroup-continuous-deliveries-import.sh
 
-## Import git repo credential resources of cluster groups
+## Import git repository credential resources to cluster groups
+### The exported credential manifests are missing their data fields. Fill them in
+### before importing, per credential type (USERNAME_PASSWORD / SSH / CACert).
+cat << 'PROMPT'
+⚠️ MANUAL STEP: base64-encode each value WITHOUT a trailing newline, e.g.:
+    printf '%s' '<pat here>'          | base64   # -> paste result as data.password
+    printf '%s' '<github username>'   | base64   # -> paste result as data.username
+  (Do NOT use `echo` — it appends a newline and breaks git auth.)
+  Put the encoded strings in the missing data fields:
+    atomicSpec:
+      data:
+        password: '<base64 from above>'
+        username: '<base64 from above>'
+  in the ./data/clustergroup-repository-credentials/*.yml, then press Enter to continue...
+PROMPT
+
+read
 ./043-clustergroup-repository-credentials-import.sh
 
 ## Import git repository resources of cluster groups
