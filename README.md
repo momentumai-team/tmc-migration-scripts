@@ -1,4 +1,4 @@
-# tmc-sm-migration-scripts
+# Tanzu Mission Control Self Managed Migration Scripts
 
 This repo holds bash scripts and a Jupyter notebook for migrating from a **TMC Self-Managed (SM) source** stack to a **TMC SM destination** stack. It is a fork of the [vmware-samples/tmc-migration-scripts](https://github.com/vmware-samples/tmc-migration-scripts) POC (originally TMC SaaS → SM); see [`migration-repurpose.md`](./migration-repurpose.md) for the rationale, fork-specific goals (non-prod-only, one cluster at a time), and the running change log.
 
@@ -113,6 +113,11 @@ You can also add multiple values for the filters via comma separation.
 | [064-cluster-data\_protection-import.sh](./064-cluster-data_protection-import.sh)                        |  Import data protections                                     | READY  |                                                                                                                                                            |
 | [070-cluster-source-cleanup.sh](./070-cluster-source-cleanup.sh)                                         | Source-side cleanup (per WC): delete the orphan cluster-scoped CD records (kustomizations, git repositories, repository secrets, CD-enable) that `031`-offboard leaves on the **source** after a WC is unmanaged | READY | Runbook step 9, run while the source MC is still registered. Requires `TMC_WC_FILTER`. **Dry run by default** — set `TMC_CLEANUP_SOURCE=true` to delete. See migration-repurpose.md "Source-side cleanup". |
 | [071-clustergroup-source-cleanup.sh](./071-clustergroup-source-cleanup.sh)                               | Source-side cleanup (final): tear down the non-prod cluster group(s) and their group-scoped CD/secret records on the **source** | READY | Run after all non-prod WCs are drained and the MC is deregistered. Requires `TMC_CG_FILTER`. **Dry run by default**; `TMC_CLEANUP_SOURCE=true` to delete. **Refuses (fail-closed)** any group that still has live member clusters, so it can never delete a group shared with prod. |
+| [100-export.sh](./100-export.sh)                                                                         | Phase wrapper: archive `./data`, connect to the source, and run the exports `002`–`031-export` | READY | Non-destructive to the source. Args: `<username> <password> <dns> <mc_filter> <wc_filter> <cg_filter>`. See [Using the phase wrapper scripts](#using-the-phase-wrapper-scripts-recommended). |
+| [110-offboard.sh](./110-offboard.sh)                                                                     | Phase wrapper: offboard all WCs and deregister the MC from the source (`031-offboard`) | READY | Destructive to the source. Forces `TMC_DEREGISTER_MC=true` and unsets `TMC_WC_FILTER` (the `wc_filter` arg is ignored). Same 6 args as `100`. |
+| [200-import-phase1.sh](./200-import-phase1.sh)                                                           | Phase wrapper: connect to the destination and import base/admin/cluster-group resources (`034`–`047`) | READY | Interactive (manual template/secret steps); fail-fast; idempotent. Args: `<username> <password> <dns>`. |
+| [210-onboard.sh](./210-onboard.sh)                                                                       | Phase wrapper: connect to the destination and onboard managed (`048`) + attached (`049`) clusters, then readiness check | READY | Interactive (kubeconfig path placeholders). Attached-cluster onboarding auto-skipped when none exported. Args: `<username> <password> <dns>`. |
+| [220-import-phase2.sh](./220-import-phase2.sh)                                                           | Phase wrapper: connect to the destination and import cluster add-ons, admin settings/access, policies, DP (`050`–`064`) | READY | Interactive (manual secret steps); fail-fast; idempotent. Needs `ADMIN_IDP_GROUP`/`MEMBER_IDP_GROUP` for `061-*`. Args: `<username> <password> <dns>`. |
 | [300-source-cleanup.sh](./300-source-cleanup.sh)                                                         | Interactive wrapper that runs 070 then 071 with a preview-then-confirm gate | READY | For each phase: previews the deletes as a dry run, then requires the operator to **type the target name** to authorize the real delete (anything else skips). Non-TTY stdin stays a dry run. Establishes the `migration` context first (via 001), like the other source-side orchestrators. Args: `<username> <password> <dns> <mc_filter> <wc_filter> <cg_filter>`. This is the recommended way to run the destructive source cleanup. |
 
 **Note:**
@@ -142,6 +147,133 @@ Operation includes:
 * Source-cleanup: reclaim the source TMC SM by deleting the migration objects it still holds after offboarding — the cluster-scoped CD orphans per WC (070) and the non-prod cluster group(s) and their group-scoped resources (071). Both dry-run by default (`TMC_CLEANUP_SOURCE=true` to apply), filter-scoped, and never touch org-wide resources shared with prod. This step is unique to this fork: the upstream SaaS→SM POC skipped source cleanup because the SaaS org was discarded, whereas here the source is a surviving production instance.
 
 ## Run the Scripts
+
+There are two ways to drive a migration run:
+
+* **The phase wrapper scripts** (`100`/`110`/`200`/`210`/`220`/`300`) — recommended. Each wrapper takes the connection details as positional arguments, sets the env vars for you, establishes the tanzu CLI context, and runs the relevant numbered sub-scripts in order (pausing at the manual steps). See **[Using the phase wrapper scripts](#using-the-phase-wrapper-scripts-recommended)** below.
+* **The individual numbered scripts** — run each `NNN-*.sh` yourself after exporting the env vars by hand. See **[In Manual way](#in-manual-way)**.
+
+### Using the phase wrapper scripts (recommended)
+
+The six wrappers split a single-cluster migration into ordered phases. Run them in numeric order; the source-side phases (`100`, `110`, `300`) take the **source** SM connection details and the destination-side phases (`200`, `210`, `220`) take the **destination** SM connection details. For every wrapper, set `TMC_SOURCE_IDP_MFA_ENABLED=true` (source phases) or `TMC_SM_IDP_MFA_ENABLED=true` (destination phases) beforehand if the corresponding IDP requires MFA. The destination phases (`200`/`220`) run fail-fast (`set -eE -o pipefail`) and the sub-scripts are idempotent, so a failed phase can be fixed and re-run safely.
+
+> ⚠️ **These wrappers cannot be run unattended.** The `200`, `210`, and `220` wrappers **block on interactive `read` prompts** while you hand-edit generated template, secret, and kubeconfig files, and `300` blocks on a type-the-target-name confirmation before each destructive delete. Each pause halts the run until you edit the named file(s) and press **Enter** (or type the confirmation token) at the terminal. Run them **attached to an interactive terminal** — piping from a non-TTY stdin will either race past the edits (`200`/`210`/`220`) or fail safe to a dry run (`300`). The exact pause points for each wrapper are listed in its section below.
+
+#### 100-export.sh — export from the source (non-destructive)
+
+Archives any existing `./data` to `data_<timestamp>.tar.gz`, removes `./data`, connects to the source SM stack (via `001`), and runs the export scripts `002`–`031-export`. It does **not** offboard anything.
+
+```bash
+./100-export.sh <username> <password> <dns> <mc_filter> <wc_filter> <cg_filter>
+```
+
+Example:
+
+```bash
+./100-export.sh admin '<source password>' tmc.source.example.com 'supervisor' 'dev1' 'dev'
+```
+
+The three filters (`mc_filter`, `wc_filter`, `cg_filter`) map to `TMC_MC_FILTER` / `TMC_WC_FILTER` / `TMC_CG_FILTER` and accept comma-separated values or `'*'` for all. This is the wrapper equivalent of the `100-export.sh` example shown under [Testing the Export](#testing-the-export).
+
+#### 110-offboard.sh — offboard from the source (destructive to the source)
+
+Assumes the `migration` context from `100` already exists. Runs `031-base-managed_clusters-offboard.sh` to **unmanage the workload clusters and deregister the management cluster** from the source SM. This wrapper forces `TMC_DEREGISTER_MC=true` and unsets `TMC_WC_FILTER`, so it offboards **all** WCs under the MC and then deregisters it — the `wc_filter` argument is accepted for signature parity but ignored. Only run it once every WC under the MC has been migrated.
+
+```bash
+./110-offboard.sh <username> <password> <dns> <mc_filter> <wc_filter> <cg_filter>
+```
+
+Example:
+
+```bash
+./110-offboard.sh admin '<source password>' tmc.source.example.com 'supervisor' 'dev1' 'dev'
+```
+
+#### 200-import-phase1.sh — import base/admin/cluster-group resources into the destination
+
+Connects to the destination SM stack (via `033`) and runs imports `034`–`047`: cluster groups, workspaces, roles, credentials/proxy/image-registry (generating templates and pausing for you to fill them in), and the cluster-group add-on resources (secrets, secret-exports, CD, repository credentials, git repos, kustomizations, helm, helm-releases). Run this **before** onboarding clusters.
+
+> ⚠️ **Manual pause points (cannot run unattended).** This wrapper stops at four `read` prompts. At each one, edit the named file(s), then press **Enter** to continue:
+>
+> 1. **Credentials** — after `037-admin-credentials-create-template.sh`: fill in the missing CA/certificate and credential fields in `data/credential/template/*.yaml`.
+> 2. **Proxy** — after `038-admin-proxy-create-template.sh`: fill in the missing fields in the generated proxy template files.
+> 3. **Image registry** — after `039-admin-image-registry-create-template.sh`: fill in the missing fields in the generated image-registry template files.
+> 4. **Cluster-group git repository credentials** — before `043-clustergroup-repository-credentials-import.sh`: fill in the missing `atomicSpec.data.data` fields in `data/clustergroup-repository-credentials/*.yml`. Base64-encode each value **without a trailing newline** (use `printf '%s' '<value>' | base64`, **not** `echo`). If this import fails, the wrapper aborts before creating git repositories — fix the `*.yml` and re-run.
+
+```bash
+./200-import-phase1.sh <username> <password> <dns>
+```
+
+Example:
+
+```bash
+./200-import-phase1.sh admin '<destination password>' tmc.destination.example.com
+```
+
+#### 210-onboard.sh — onboard clusters into the destination
+
+Connects to the destination SM stack and onboards clusters: generates the MC kubeconfig index file (`048-input_from_user`, pausing for you to replace the path placeholders), ensures stale source-TMC annotations/agents are removed (`048-ensure-cleanup`), onboards the managed clusters (`048-onboard`), onboards attached clusters (`049`) **only if any were exported**, and runs the readiness check (`049-check_readiness`).
+
+> ⚠️ **Manual pause points (cannot run unattended).** This wrapper stops to let you wire up real kubeconfigs. At each one, edit the named index file, then press **Enter** to continue:
+>
+> 1. **Managed-cluster kubeconfigs** — after `048-base-managed_clusters-input_from_user.sh`: replace every `/path/to/the/real/mc_kubeconfig/file` placeholder in `data/clusters/mc-kubeconfig-index-file` with the real kubeconfig path for each management cluster.
+> 2. **Attached-cluster kubeconfigs** — *only when attached clusters were exported*, after `049-base-attached_clusters-input_from_user.sh`: replace every `/path/to/the/real/wc_kubeconfig/file` placeholder in `data/clusters/attached-wc-kubeconfig-index-file`. If no attached clusters were exported, the wrapper skips this prompt automatically.
+
+```bash
+./210-onboard.sh <username> <password> <dns>
+```
+
+Example:
+
+```bash
+./210-onboard.sh admin '<destination password>' tmc.destination.example.com
+```
+
+Onboarding tuning env vars still apply: set `CLUSTERS_ONBOARD_BATCH_SIZE` for the parallel batch size (default 1) and `CLUSTER_ONBOARD_TIMEOUT` for large clusters (default 10 min).
+
+#### 220-import-phase2.sh — import cluster add-ons and policies into the destination
+
+Connects to the destination SM stack and runs the post-onboarding imports `050`–`064`: cluster namespaces, secrets/secret-exports (pausing to fill in secret data), CD, repository credentials, git repos, kustomizations, helm/helm-releases, admin settings and access, access policies, policy templates, policy assignments, and data protection. The `061-*` scripts need the destination IDP admin/member group names; override the defaults if they differ from `tmc:admin` / `tmc:member`:
+
+> ⚠️ **Manual pause points (cannot run unattended).** This wrapper stops at two `read` prompts. At each one, edit the named file(s), then press **Enter** to continue:
+>
+> 1. **Cluster k8s secrets** — before `051-cluster-secrets-import.sh`: fill in the missing `spec.data` fields in `data/cluster-secrets/*.yml` (secret data is not exported). Per type: `SECRET_TYPE_OPAQUE` → `spec.data.<key>: <base64 value>`; `SECRET_TYPE_DOCKERCONFIGJSON` → `spec.data.".dockerconfigjson": <base64 json>`.
+> 2. **Cluster git repository credentials** — before `054-cluster-repository-credentials-import.sh`: fill in the missing data fields in `data/cluster-repository-credentials/*.yml` (per credential type: USERNAME_PASSWORD / SSH / CACert). If this import fails, the wrapper aborts before creating git repositories — fix the `*.yml` and re-run. (Cluster-group-derived secrets are skipped here; they were imported at cluster-group scope in phase 1 and propagated by TMC.)
+>
+> Also note the `061-*` access policies are imported with the **source** IDP identities — after this phase completes, manually edit them with the correct destination user/usergroup identities.
+
+```bash
+export ADMIN_IDP_GROUP="tmc:admin"
+export MEMBER_IDP_GROUP="tmc:member"
+./220-import-phase2.sh <username> <password> <dns>
+```
+
+Example:
+
+```bash
+./220-import-phase2.sh admin '<destination password>' tmc.destination.example.com
+```
+
+#### 300-source-cleanup.sh — reclaim the source (interactive, destructive)
+
+Runs the two source-side cleanup phases (`070` per-WC CD orphans, then `071` cluster-group teardown) behind a preview-then-confirm gate. For each phase it first runs a dry run, prints exactly what would be deleted, and only applies the deletes if you type the target name (the WC filter for `070`, the CG filter for `071`); anything else skips the phase, and non-terminal stdin stays a dry run. Establishes the `migration` context first (via `001`). See step 22 of [In Manual way](#in-manual-way) for when to run each phase.
+
+> ⚠️ **Manual confirmation gate (cannot run unattended).** This wrapper is destructive and runs against the **production source**. It never deletes on its own — for each phase it stops after the dry-run preview and waits for you to authorize:
+>
+> 1. **Phase 070 (per-WC CD orphans)** — type the **WC filter** (`<wc_filter>`) exactly to apply; anything else skips the phase.
+> 2. **Phase 071 (cluster-group teardown)** — type the **CG filter** (`<cg_filter>`) exactly to apply; anything else skips the phase. `071` fails closed on any group that still has live members, so previewing it mid-migration is safe.
+>
+> If stdin is **not** a terminal, both phases are left as dry runs (fail-safe) — nothing is deleted.
+
+```bash
+./300-source-cleanup.sh <username> <password> <dns> <mc_filter> <wc_filter> <cg_filter>
+```
+
+Example:
+
+```bash
+./300-source-cleanup.sh admin '<source password>' tmc.source.example.com non-prod-mgr dev2 dev
+```
 
 ### In Manual way
 
